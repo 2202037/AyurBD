@@ -38,9 +38,9 @@ create or replace function public.record_payment_split(
   p_appointment_id    bigint,
   p_amount            numeric(10,2),
   p_stripe_session_id varchar(100),
+  p_patient_id        uuid,
   p_stripe_pi_id      varchar(100) default null,
-  p_stripe_customer_id varchar(100) default null,
-  p_patient_id        uuid
+  p_stripe_customer_id varchar(100) default null
 )
 returns public.payments
 language plpgsql
@@ -293,11 +293,11 @@ $$;
 -- ---------------------------------------------------------------------
 -- 6. Grant execute permissions
 -- ---------------------------------------------------------------------
-grant execute on function public.record_payment_split(bigint, numeric, varchar, varchar, varchar, uuid) to authenticated;
+grant execute on function public.record_payment_split(bigint, numeric, varchar, uuid, varchar, varchar) to authenticated;
 grant execute on function public.confirm_appointment(bigint) to authenticated;
 grant execute on function public.handle_failed_payment(bigint, varchar, text) to authenticated;
 
 -- Service role needs execute for webhook (bypasses RLS)
-grant execute on function public.record_payment_split(bigint, numeric, varchar, varchar, varchar, uuid) to service_role;
+grant execute on function public.record_payment_split(bigint, numeric, varchar, uuid, varchar, varchar) to service_role;
 grant execute on function public.confirm_appointment(bigint) to service_role;
 grant execute on function public.handle_failed_payment(bigint, varchar, text) to service_role;
