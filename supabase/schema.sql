@@ -152,7 +152,7 @@ create type appointment_type as enum ('new', 'followup', 'online');
 
 drop type if exists appointment_status cascade;
 create type appointment_status as enum
-  ('pending', 'confirmed', 'completed', 'cancelled', 'expired');
+  ('pending', 'pending_payment', 'confirmed', 'completed', 'cancelled', 'expired');
 
 -- appointments.payment_status and orders.payment_status.
 drop type if exists payment_state cascade;
@@ -568,6 +568,10 @@ create table public.payments (
   -- the gateway API before the payment is accepted.
   gateway                varchar(30),
   gateway_transaction_id varchar(100),
+  -- Stripe fields
+  stripe_session_id      varchar(100),
+  stripe_payment_intent_id varchar(100),
+  stripe_customer_id     varchar(100),
   refunded_at            timestamptz,
   -- Money split, computed by payments_apply_verification the moment a payment
   -- is verified. admin_share is the platform commission (commission_percentage
@@ -608,6 +612,15 @@ create index idx_payments_user        on public.payments (user_id);
 create index idx_payments_transaction on public.payments (transaction_id);
 create index idx_payments_status      on public.payments (payment_status);
 create index idx_payments_verified_by on public.payments (verified_by);
+
+-- Stripe idempotency indexes
+create unique index uq_payments_stripe_session
+  on public.payments (stripe_session_id)
+  where stripe_session_id is not null;
+
+create unique index uq_payments_stripe_pi
+  on public.payments (stripe_payment_intent_id)
+  where stripe_payment_intent_id is not null;
 
 -- One outstanding submission per appointment: while a payment is 'pending'
 -- the patient cannot file a second one, so a submission cannot be spammed.

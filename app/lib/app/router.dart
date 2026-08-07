@@ -35,6 +35,7 @@ import '../features/admin/presentation/admin_users_screen.dart';
 import '../features/appointments/presentation/book_appointment_screen.dart';
 import '../features/appointments/presentation/my_appointments_screen.dart';
 import '../features/appointments/presentation/payments_screen.dart';
+import '../features/appointments/presentation/receipt_screen.dart';
 import '../features/auth/presentation/auth_controller.dart';
 import '../features/auth/presentation/clinic_register_screen.dart';
 import '../features/auth/presentation/doctor_register_screen.dart';
@@ -128,6 +129,7 @@ class Routes {
   static const String checkout = '/checkout';
   static const String orders = '/orders';
   static const String payments = '/payments';
+  static const String receipt = '/receipt';
   static const String notifications = '/notifications';
   static const String blog = '/blog';
   static const String dashboard = '/dashboard';
@@ -230,6 +232,7 @@ const List<String> _patientOnly = [
   Routes.checkout,
   Routes.orders,
   Routes.payments,
+  Routes.receipt,
   Routes.nearby,
   Routes.myReviews,
   // `/patient/dashboard` only calls `require_auth()`, not `require_role`, so a
@@ -551,6 +554,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootKey,
         path: Routes.payments,
         builder: (_, __) => const PaymentsScreen(),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootKey,
+        path: '${Routes.receipt}/:appointmentId',
+        builder: (_, s) => ReceiptScreen(appointmentId: _id(s)),
       ),
       GoRoute(
         parentNavigatorKey: _rootKey,

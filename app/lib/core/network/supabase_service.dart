@@ -60,6 +60,23 @@ class SupabaseService {
 
   bool get hasSession => _client.auth.currentSession != null;
 
+  /// Calls a Supabase Edge Function with the current user's auth token.
+  Future<T> functionsInvoke<T>(
+    String functionName, {
+    Map<String, dynamic>? body,
+    Map<String, String>? headers,
+  }) async {
+    return guard(() async {
+      final response = await _client.functions.invoke(
+        functionName,
+        body: body,
+        headers: headers,
+      );
+      // Edge Functions throw on error, so if we get here it succeeded
+      return response.data as T;
+    });
+  }
+
   /// Runs [body] and converts anything it throws into [ApiException].
   ///
   /// Every repository call goes through this. Without it a Postgrest RLS refusal

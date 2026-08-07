@@ -13,6 +13,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app/router.dart';
 import '../../../core/constants/app_theme.dart';
@@ -125,7 +126,16 @@ class _MyAppointmentsScreenState extends ConsumerState<MyAppointmentsScreen> {
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (ctx) => _MethodSheet(amount: a.fee),
+      builder: (ctx) => _MethodSheet(
+        amount: a.fee,
+        appointmentId: a.id,
+        onStripeCheckout: (session) async {
+          final url = session.checkoutUrl;
+          if (await canLaunchUrl(Uri.parse(url))) {
+            await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+          }
+        },
+      ),
     );
     if (choice == null) return;
     final ok = await _run(() => ref.read(appointmentRepositoryProvider).pay(
@@ -374,21 +384,28 @@ typedef PaymentSubmission = ({
 /// The sheet collects a transaction reference too, because the server 422s any
 /// method except Cash that arrives without one. Picking a method alone used to
 /// be enough here, which meant every mobile-banking payment bounced.
-class _MethodSheet extends StatefulWidget {
-  const _MethodSheet({required this.amount});
+class _MethodSheet extends ConsumerStatefulWidget {
+  const _MethodSheet({
+    required this.amount,
+    required this.appointmentId,
+    required this.onStripeCheckout,
+  });
 
   final double amount;
+  final int appointmentId;
+  final Future<void> Function(StripeCheckoutSession) onStripeCheckout;
 
   @override
-  State<_MethodSheet> createState() => _MethodSheetState();
+  ConsumerState<_MethodSheet> createState() => _MethodSheetState();
 }
 
-class _MethodSheetState extends State<_MethodSheet> {
+class _MethodSheetState extends ConsumerState<_MethodSheet> {
   final _form = GlobalKey<FormState>();
   final _ref = TextEditingController();
   final _sender = TextEditingController();
 
   PaymentMethod? _method;
+  bool _stripeLoading = false;
 
   @override
   void dispose() {
@@ -408,6 +425,29 @@ class _MethodSheetState extends State<_MethodSheet> {
       transactionRef: _ref.text.trim().isEmpty ? null : _ref.text.trim(),
       senderNumber: _sender.text.trim().isEmpty ? null : _sender.text.trim(),
     ));
+  }
+
+  Future<void> _payWithStripe() async {
+    setState(() => _stripeLoading = true);
+    try {
+      final repo = ref.read(appointmentRepositoryProvider);
+      final session = await repo.createStripeCheckoutSession(
+        appointmentId: widget.appointmentId,
+      );
+      if (mounted) {
+        await widget.onStripeCheckout(session);
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        showToast(context, e.message, error: true);
+      }
+    } catch (_) {
+      if (mounted) {
+        showToast(context, 'Something went wrong.', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _stripeLoading = false);
+    }
   }
 
   @override
@@ -445,6 +485,44 @@ class _MethodSheetState extends State<_MethodSheet> {
                         ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
                 ),
+                // Stripe online payment option
+                ListTile(
+                  leading: Icon(Icons.credit_card, color: theme.colorScheme.primary),
+                  title: Text(
+                    'Pay online (Card / bKash / Mobile Banking)',
+                    style: theme.textTheme.bodyLarge,
+                  ),
+                  subtitle: Text(
+                    'Secure checkout via Stripe',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  trailing: _stripeLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(Icons.arrow_forward_ios, size: 16, color: theme.colorScheme.primary),
+                  onTap: _stripeLoading ? null : _payWithStripe,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: theme.colorScheme.primary.withOpacity(0.3)),
+                  ),
+                  tileColor: theme.colorScheme.primaryContainer.withOpacity(0.1),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: AppTheme.gap),
+                  child: Text(
+                    'Or pay manually:',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
                 // `sslcommerz` is the online-gateway flow and is launched from
                 // its own checkout, not this manual sheet — the server refuses
                 // a client-written gateway payment row (42501), so offering it

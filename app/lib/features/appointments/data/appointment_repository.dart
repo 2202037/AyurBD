@@ -299,6 +299,29 @@ class AppointmentRepository {
     });
   }
 
+  /// Creates a Stripe Checkout Session for the appointment.
+  ///
+  /// Calls the `create-checkout-session` Edge Function which:
+  /// 1. Authenticates the user
+  /// 2. Validates the appointment belongs to the patient and is in pending_payment state
+  /// 3. Reads the fee from the database (never from client)
+  /// 4. Creates a Stripe Checkout Session
+  /// 5. Returns the checkout URL and session ID
+  Future<StripeCheckoutSession> createStripeCheckoutSession({
+    required int appointmentId,
+  }) async {
+    return SupabaseService.guard(() async {
+      _requireUser();
+
+      final result = await _sb.functionsInvoke<Map<String, dynamic>>(
+        'create-checkout-session',
+        body: {'appointment_id': appointmentId},
+      );
+
+      return StripeCheckoutSession.fromJson(result);
+    });
+  }
+
   Future<Paged<Payment>> payments({
     int page = 1,
     int limit = AppConfig.defaultPageSize,
@@ -323,6 +346,54 @@ class AppointmentRepository {
         items: res.data.map((r) => Payment.fromJson(_shapePayment(r))).toList(),
         meta: PageMeta(page: page, limit: limit, total: res.count),
       );
+    });
+  }
+
+  /// Fetches the payment receipt for an appointment.
+  ///
+  /// Returns a [PaymentReceipt] with all details needed for display/PDF generation.
+  /// Only works for verified/paid payments.
+  Future<PaymentReceipt> getReceipt({
+    required int appointmentId,
+  }) async {
+    return SupabaseService.guard(() async {
+      _requireUser();
+
+      final res = await _sb
+          .db('payments')
+          .select('''
+            id,
+            appointment_id,
+            amount,
+            payment_method,
+            transaction_id,
+            stripe_payment_intent_id,
+            gateway_transaction_id,
+            verified_at,
+            admin_share,
+            provider_share,
+            appointments!inner(
+              fee,
+              appointment_date,
+              appointment_time,
+              doctor_name,
+              patient_id,
+              doctors!inner(
+                hospital_clinic_name,
+                chamber_address,
+                users!inner(name)
+              )
+            ),
+            users!inner(name)
+          ''')
+          .eq('appointment_id', appointmentId)
+          .eq('payment_status', 'verified')
+          .eq('gateway', 'stripe')
+          .order('created_at', ascending: false)
+          .limit(1)
+          .single();
+
+      return PaymentReceipt.fromJson(_shapeReceipt(res));
     });
   }
 
@@ -388,6 +459,33 @@ class AppointmentRepository {
       'paid_at': r['verified_at'],
       'doctor_name': user?['name'],
       'appointment_date': appointment?['appointment_date'],
+    };
+  }
+
+  Map<String, dynamic> _shapeReceipt(Map<String, dynamic> r) {
+    final appointment = r['appointments'] as Map<String, dynamic>?;
+    final doctor = appointment?['doctors'] as Map<String, dynamic>?;
+    final doctorUser = doctor?['users'] as Map<String, dynamic>?;
+    final patient = r['users'] as Map<String, dynamic>?;
+
+    return {
+      'id': r['id'],
+      'appointment_id': r['appointment_id'],
+      'amount': r['amount'],
+      'payment_method': r['payment_method'],
+      'transaction_id': r['transaction_id'],
+      'stripe_payment_intent_id': r['stripe_payment_intent_id'],
+      'gateway_transaction_id': r['gateway_transaction_id'],
+      'paid_at': r['verified_at'],
+      'admin_share': r['admin_share'],
+      'provider_share': r['provider_share'],
+      'patient_name': patient?['name'] ?? 'Patient',
+      'doctor_name': appointment?['doctor_name'] ?? doctorUser?['name'] ?? 'Doctor',
+      'appointment_date': appointment?['appointment_date'],
+      'appointment_time': appointment?['appointment_time'],
+      'clinic_name': doctor?['hospital_clinic_name'],
+      'clinic_address': doctor?['chamber_address'],
+      'fee': appointment?['fee'],
     };
   }
 

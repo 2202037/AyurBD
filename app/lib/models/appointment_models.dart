@@ -318,3 +318,81 @@ String? _orNull(Object? v) {
   final s = Fmt.str(v);
   return s.isEmpty ? null : s;
 }
+
+/// Stripe Checkout Session response from the Edge Function.
+class StripeCheckoutSession {
+  const StripeCheckoutSession({
+    required this.checkoutUrl,
+    required this.sessionId,
+  });
+
+  final String checkoutUrl;
+  final String sessionId;
+
+  factory StripeCheckoutSession.fromJson(Map<String, dynamic> json) =>
+      StripeCheckoutSession(
+        checkoutUrl: json['checkout_url'] as String,
+        sessionId: json['session_id'] as String,
+      );
+}
+
+/// Payment receipt generated after successful payment.
+class PaymentReceipt {
+  const PaymentReceipt({
+    required this.id,
+    required this.appointmentId,
+    required this.amount,
+    required this.paymentMethod,
+    required this.transactionId,
+    required this.stripeTransactionId,
+    required this.gatewayReference,
+    required this.paidAt,
+    required this.patientName,
+    required this.doctorName,
+    required this.appointmentDate,
+    required this.appointmentTime,
+    required this.clinicName,
+    required this.clinicAddress,
+    required this.fee,
+    required this.platformFee,
+    required this.doctorShare,
+  });
+
+  final int id;
+  final int appointmentId;
+  final double amount;
+  final String paymentMethod;
+  final String? transactionId;
+  final String stripeTransactionId;
+  final String gatewayReference;
+  final DateTime paidAt;
+  final String patientName;
+  final String doctorName;
+  final String appointmentDate;
+  final String appointmentTime;
+  final String? clinicName;
+  final String? clinicAddress;
+  final double fee;
+  final double platformFee;
+  final double doctorShare;
+
+  factory PaymentReceipt.fromJson(Map<String, dynamic> json) => PaymentReceipt(
+        id: json['id'] as int,
+        appointmentId: json['appointment_id'] as int,
+        amount: (json['amount'] as num).toDouble(),
+        paymentMethod: json['payment_method'] as String,
+        transactionId: json['transaction_id'] as String?,
+        stripeTransactionId: json['stripe_payment_intent_id'] as String? ?? '',
+        gatewayReference: json['gateway_transaction_id'] as String? ?? '',
+        paidAt: DateTime.parse(json['paid_at'] as String),
+        patientName: json['patient_name'] as String,
+        doctorName: json['doctor_name'] as String,
+        appointmentDate: json['appointment_date'] as String,
+        appointmentTime: json['appointment_time'] as String,
+        clinicName: json['clinic_name'] as String?,
+        clinicAddress: json['clinic_address'] as String?,
+        fee: (json['fee'] as num).toDouble(),
+        platformFee: (json['admin_share'] as num).toDouble(),
+        doctorShare: (json['provider_share'] as num).toDouble(),
+      );
+}
