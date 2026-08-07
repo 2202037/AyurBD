@@ -2593,9 +2593,9 @@ begin
          coalesce(p_type, 'new'::public.appointment_type),
          p_symptoms,
          p_notes,
-         d.consultation_fee,
-         'pending'::public.appointment_status,
-         'pending'::public.payment_state
+d.consultation_fee,
+          'pending_payment'::public.appointment_status,
+          'pending'::public.payment_state
     from public.doctors d
     join public.users u on u.id = d.user_id
    where d.id = p_doctor_id
