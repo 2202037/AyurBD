@@ -1,19 +1,11 @@
-# Supabase
-supabase/.temp/
-supabase/supabase/.temp/
-
 # Flutter
 .dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
 .packages
+.pub-cache/
 .pub/
 build/
-
-# App
-app/build/
-app/.dart_tool/
-app/.flutter-plugins
-app/.flutter-plugins-dependencies
-app/.packages
 
 # Android
 android/.gradle/
@@ -29,12 +21,18 @@ ios/.symlinks/
 # IntelliJ
 .idea/
 
+# Logs
+*.log
+
 # Environment
 .env
 .env.*
 
-# Logs
-*.log
+# Firebase
+firebase-debug.log
 
-# Generated
-coverage/
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
