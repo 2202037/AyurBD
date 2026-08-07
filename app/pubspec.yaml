@@ -1,0 +1,58 @@
+name: ayur
+description: AYUR — Bangladeshi Ayurvedic healthcare. Flutter presentation-layer
+  twin of the existing PHP/MySQL website (§1 of the build spec).
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management — §3 says pick ONE. Riverpod chosen: no codegen needed,
+  # and providers compose well with the per-feature layering.
+  flutter_riverpod: ^2.5.1
+
+  # Backend. Replaces the PHP API entirely: Postgrest for data, GoTrue for
+  # auth, Storage for images. Brings its own HTTP stack, which is why `dio`
+  # is gone — nothing speaks to a REST endpoint by hand any more.
+  supabase_flutter: ^2.5.6
+
+  # Session persistence. supabase_flutter persists its own session in
+  # SharedPreferences by default; SecureStore keeps it in the OS keystore
+  # instead, as §10 requires. See core/storage/secure_store.dart.
+  flutter_secure_storage: ^9.2.2
+
+  # Non-sensitive prefs only (theme mode).
+  shared_preferences: ^2.2.3
+
+  # Declarative routing + role guards (§7).
+  go_router: ^14.1.4
+
+  cached_network_image: ^3.3.1
+  table_calendar: ^3.1.2
+  intl: ^0.19.0
+  url_launcher: ^6.2.6
+
+  cupertino_icons: ^1.0.8
+
+  # NOT included by design (integration choice: skip keyed integrations):
+  #   firebase_core / firebase_messaging  — needs a real Firebase project
+  #   google_maps_flutter / geolocator    — needs an API key + platform setup
+  # Nearby / blood-bank screens render a distance-sorted LIST instead of a map.
+  # The backend already returns distance_km, so swapping in a map later is a
+  # UI-only change.
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  # No asset bundle: every image in this slice comes from the PHP server over
+  # HTTP and is cached by cached_network_image. Declaring an `assets/` folder
+  # that does not exist would fail the build, so add the entry back only when
+  # you actually drop files in.

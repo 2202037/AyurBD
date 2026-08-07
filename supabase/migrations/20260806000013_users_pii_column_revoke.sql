@@ -1,0 +1,26 @@
+-- =====================================================================
+-- 20260806000013_users_pii_column_revoke.sql
+--
+-- Closes the users PII column exposure.
+--
+-- THE ISSUE
+--   `grant select on public.users to anon, authenticated` is table-wide,
+--   and RLS only restricts ROWS (active verified providers are visible),
+--   not COLUMNS. Anyone holding the anon key could run
+--   `select address, blood_group, gender, city from users` against those
+--   rows and pull residence / health data that the app never renders
+--   publicly. The public directory intentionally shows name/phone/email/
+--   profile_image (doctor_directory), but nothing needs address,
+--   blood_group, gender or city from anon.
+--
+-- THE FIX
+--   Revoke just those four columns from anon. Column-level privileges
+--   layer on top of the table grant, so this makes a broad `select *`
+--   error instead of silently leaking, while the views and the explicit
+--   column lists the app uses keep working. Authenticated is untouched —
+--   a user must still read their own profile row.
+--
+-- Idempotent: REVOKE is safe to re-run.
+-- =====================================================================
+
+revoke select (address, blood_group, gender, city) on public.users from anon;

@@ -1,0 +1,21 @@
+-- =====================================================================
+-- 20260806000017_revoke_expire_stale_execute.sql
+--
+-- Least privilege on the stale-appointment sweeper.
+--
+-- WHY
+--   expire_stale_appointments() is a statement-level AFTER trigger that
+--   the schema fires on appointment writes. It was ALSO granted EXECUTE
+--   to authenticated, turning an internal maintenance function into an
+--   RPC any logged-in user could invoke at will. It is not an RPC
+--   entry point and no client code calls it. Triggers fire without the
+--   DML caller's EXECUTE grant, so revoking is safe — the sweep still
+--   runs on every appointment write.
+--
+-- THE FIX
+--   Revoke from public (the default grant), anon and authenticated.
+--
+-- Idempotent: REVOKE is safe to re-run.
+-- =====================================================================
+
+revoke all on function public.expire_stale_appointments() from public, anon, authenticated;

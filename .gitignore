@@ -1,0 +1,29 @@
+# Flutter
+.dart_tool/
+.packages
+.pub/
+build/
+
+# Android
+android/.gradle/
+android/local.properties
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+
+# VS Code
+.vscode/
+
+# IntelliJ
+.idea/
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+
+# Generated
+coverage/

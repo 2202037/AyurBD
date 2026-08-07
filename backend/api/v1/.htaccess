@@ -1,0 +1,27 @@
+# Route every request under /api/v1/ into the front controller.
+# Requires Apache mod_rewrite (enabled by default in XAMPP).
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Pass the Authorization header through to PHP. Some Apache/PHP-FPM
+    # combinations strip it, which would break every JWT route.
+    RewriteCond %{HTTP:Authorization} ^(.+)$
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
+
+    # Real files (if any) serve directly.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+</IfModule>
+
+# Never expose PHP errors as HTML to the client — the API must always
+# return the JSON envelope. Errors go to the Apache log instead.
+php_flag display_errors off
+php_flag log_errors on
