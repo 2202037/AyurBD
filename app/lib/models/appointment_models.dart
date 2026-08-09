@@ -396,3 +396,68 @@ class PaymentReceipt {
         doctorShare: (json['provider_share'] as num).toDouble(),
       );
 }
+
+/// Individual health check result.
+class HealthCheck {
+  const HealthCheck({
+    required this.check,
+    required this.status,
+    required this.message,
+    this.details,
+  });
+
+  final String check;
+  final String status; // pass | fail | warn
+  final String message;
+  final Map<String, dynamic>? details;
+
+  factory HealthCheck.fromJson(Map<String, dynamic> json) => HealthCheck(
+        check: json['check'] as String,
+        status: json['status'] as String,
+        message: json['message'] as String,
+        details: json['details'] as Map<String, dynamic>?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'check': check,
+        'status': status,
+        'message': message,
+        if (details != null) 'details': details,
+      };
+
+  bool get isPass => status == 'pass';
+  bool get isFail => status == 'fail';
+  bool get isWarn => status == 'warn';
+}
+
+/// Payment health check report.
+class PaymentHealthReport {
+  const PaymentHealthReport({
+    required this.overallStatus,
+    required this.timestamp,
+    required this.checks,
+    this.appointmentId,
+    this.patientId,
+  });
+
+  final String overallStatus; // healthy | unhealthy
+  final DateTime timestamp;
+  final List<HealthCheck> checks;
+  final int? appointmentId;
+  final String? patientId;
+
+  factory PaymentHealthReport.fromJson(Map<String, dynamic> json) => PaymentHealthReport(
+        overallStatus: json['overall_status'] as String,
+        timestamp: DateTime.parse(json['timestamp'] as String),
+        checks: (json['checks'] as List)
+            .map((c) => HealthCheck.fromJson(c as Map<String, dynamic>))
+            .toList(),
+        appointmentId: json['appointment_id'] as int?,
+        patientId: json['patient_id'] as String?,
+      );
+
+  bool get isHealthy => overallStatus == 'healthy';
+  List<HealthCheck> get failures => checks.where((c) => c.isFail).toList();
+  List<HealthCheck> get warnings => checks.where((c) => c.isWarn).toList();
+  List<HealthCheck> get passes => checks.where((c) => c.isPass).toList();
+}

@@ -1,8 +1,9 @@
 /// Slots, booking, cancellation and payment — from Supabase.
 ///
 /// Public surface is unchanged: `slots()`, `book()`, `mine()`, `cancel()`,
-/// `pay()`, `payments()` keep their signatures and return types, so the booking
-/// flow, the appointment list and the payment sheet are not edited.
+/// `pay()`, `payments()` keep their signatures and return types, and
+/// `createStripeCheckoutSession()` / `byId()` / `getReceipt()` back the Stripe
+/// redirect flow.
 ///
 /// Three things the PHP did on the server now have to be arranged explicitly:
 ///
@@ -34,6 +35,7 @@ import '../../../core/network/api_result.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/providers.dart';
 import '../../../core/utils/formatters.dart';
+import '../../../core/utils/payment_debug_logger.dart';
 import '../../../models/appointment_models.dart';
 
 /// Unchanged: `works_on_day` tells the screen whether the doctor practises at
@@ -178,6 +180,35 @@ class AppointmentRepository {
     });
   }
 
+  /// Fetches one appointment owned by the signed-in patient.
+  ///
+  /// Used by the Stripe payment screens: the redirect URL carries only the
+  /// `appointment_id`, and the screen has to re-read the row to learn whether
+  /// the webhook has moved `payment_status` to `paid` yet. The `patient_id`
+  /// filter keeps this "not found" for a mis-scoped id instead of returning
+  /// someone else's row under RLS.
+  Future<Appointment> byId(int appointmentId) async {
+    return SupabaseService.guard(() async {
+      final patientId = _requireUser();
+
+      final row = await _sb
+          .db('appointments')
+          .select(_columns)
+          .eq('id', appointmentId)
+          .eq('patient_id', patientId)
+          .maybeSingle();
+
+      if (row == null) {
+        throw ApiException(
+          message: 'That appointment could not be found.',
+          statusCode: 404,
+        );
+      }
+
+      return Appointment.fromJson(_shape(row));
+    });
+  }
+
   Future<Paged<Appointment>> mine({
     int page = 1,
     int limit = AppConfig.defaultPageSize,
@@ -310,16 +341,77 @@ class AppointmentRepository {
   Future<StripeCheckoutSession> createStripeCheckoutSession({
     required int appointmentId,
   }) async {
-    return SupabaseService.guard(() async {
-      _requireUser();
+    final patientId = _requireUser();
 
+    PaymentDebugLogger.logCreateCheckoutRequest(
+      appointmentId: appointmentId,
+      patientId: patientId,
+    );
+
+    return SupabaseService.guard(() async {
       final result = await _sb.functionsInvoke<Map<String, dynamic>>(
         'create-checkout-session',
         body: {'appointment_id': appointmentId},
       );
 
-      return StripeCheckoutSession.fromJson(result);
+      // Parse structured error response from Edge Function
+      if (result['success'] == false) {
+        final code = result['code'] as String? ?? 'UNKNOWN_ERROR';
+        final message = result['message'] as String? ?? 'An unexpected error occurred.';
+        final details = result['details'] as Map<String, dynamic>?;
+
+        PaymentDebugLogger.logError(
+          event: 'CREATE_CHECKOUT_SESSION_FAILED',
+          appointmentId: appointmentId,
+          patientId: patientId,
+          error: '$code: $message',
+          stackTrace: StackTrace.current,
+          details: details,
+        );
+
+        throw ApiException(
+          message: message,
+          statusCode: _statusCodeForErrorCode(code),
+        );
+      }
+
+      final session = StripeCheckoutSession.fromJson(result['data'] as Map<String, dynamic>);
+
+      PaymentDebugLogger.logStripeResponse(
+        appointmentId: appointmentId,
+        patientId: patientId,
+        stripeSessionId: session.sessionId,
+        checkoutUrl: session.checkoutUrl,
+        paymentIntentId: '', // Will be available after webhook
+      );
+
+      return session;
     });
+  }
+
+  /// Maps Edge Function error codes to HTTP status codes for ApiException.
+  int _statusCodeForErrorCode(String code) {
+    switch (code) {
+      case 'UNAUTHORIZED':
+        return 401;
+      case 'VALIDATION_ERROR':
+        return 400;
+      case 'APPOINTMENT_NOT_FOUND':
+        return 404;
+      case 'INVALID_APPOINTMENT_STATUS':
+      case 'PAYMENT_ALREADY_PROCESSED':
+      case 'INVALID_AMOUNT':
+      case 'DOCTOR_NOT_FOUND':
+      case 'DOCTOR_FEE_MISSING':
+        return 400;
+      case 'STRIPE_NOT_CONFIGURED':
+      case 'APP_URL_NOT_CONFIGURED':
+        return 500;
+      case 'UNEXPECTED_SERVER_ERROR':
+        return 500;
+      default:
+        return 400;
+    }
   }
 
   Future<Paged<Payment>> payments({
@@ -394,6 +486,66 @@ class AppointmentRepository {
           .single();
 
       return PaymentReceipt.fromJson(_shapeReceipt(res));
+    });
+  }
+
+  /// Runs a comprehensive health check on the payment system.
+  ///
+  /// Verifies:
+  /// - Stripe secret key is configured
+  /// - Webhook secret is configured
+  /// - APP_URL is configured
+  /// - Required RPC functions exist
+  /// - Appointment status is valid (if appointmentId provided)
+  /// - Payment status is valid (if appointmentId provided)
+  /// - Database tables exist
+  /// - Doctor exists and has valid fee
+  ///
+  /// Returns a structured health report with overall status and individual check results.
+  Future<PaymentHealthReport> checkPaymentHealth({
+    int? appointmentId,
+  }) async {
+    final patientId = _requireUser();
+
+    PaymentDebugLogger.log(
+      event: 'HEALTH_CHECK_REQUEST',
+      appointmentId: appointmentId,
+      patientId: patientId,
+    );
+
+    return SupabaseService.guard(() async {
+      final result = await _sb.rpc<Map<String, dynamic>>(
+        'payment_health_check',
+        params: {
+          if (appointmentId != null) 'p_appointment_id': appointmentId,
+          'p_patient_id': patientId,
+        },
+      );
+
+      final report = PaymentHealthReport.fromJson(result);
+
+      PaymentDebugLogger.log(
+        event: 'HEALTH_CHECK_RESULT',
+        appointmentId: appointmentId,
+        patientId: patientId,
+        details: {
+          'overall_status': report.overallStatus,
+          'checks_count': report.checks.length,
+        },
+      );
+
+      if (report.overallStatus != 'healthy') {
+        PaymentDebugLogger.logError(
+          event: 'HEALTH_CHECK_FAILED',
+          appointmentId: appointmentId ?? 0,
+          patientId: patientId,
+          error: 'Payment health check failed: ${report.overallStatus}',
+          stackTrace: StackTrace.current,
+          details: {'checks': report.checks.map((c) => c.toJson()).toList()},
+        );
+      }
+
+      return report;
     });
   }
 

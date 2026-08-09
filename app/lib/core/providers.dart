@@ -7,6 +7,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'network/supabase_service.dart';
 import 'storage/prefs_store.dart';
 import 'storage/secure_store.dart';
+import '../../features/appointments/data/appointment_repository.dart';
+import '../../models/appointment_models.dart';
 
 final secureStoreProvider = Provider<SecureStore>((ref) => SecureStore());
 
@@ -25,4 +27,13 @@ final supabaseServiceProvider = Provider<SupabaseService>((ref) {
 /// rather than papering over with a throwaway instance.
 final prefsStoreProvider = Provider<PrefsStore>((ref) {
   throw StateError('prefsStoreProvider was not overridden — see bootstrap() in main.dart');
+});
+
+/// Health check provider for payment system diagnostics.
+///
+/// Returns a [PaymentHealthReport] with overall status and individual check results.
+/// Can be used to verify the payment system is healthy before initiating a payment.
+final paymentHealthCheckProvider = FutureProvider.family<PaymentHealthReport, int?>((ref, appointmentId) async {
+  final repo = ref.watch(appointmentRepositoryProvider);
+  return repo.checkPaymentHealth(appointmentId: appointmentId);
 });

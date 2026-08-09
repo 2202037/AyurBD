@@ -23,10 +23,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app/app.dart';
+import 'app/router.dart';
 import 'core/constants/app_config.dart';
+import 'core/deep_links/deep_link_service.dart';
 import 'core/providers.dart';
 import 'core/storage/prefs_store.dart';
 import 'core/storage/secure_store.dart';
+import 'core/utils/payment_debug_logger.dart';
 import 'features/auth/presentation/auth_controller.dart';
 
 Future<void> main() async {
@@ -43,6 +46,9 @@ Future<void> main() async {
     ),
     debug: AppConfig.verboseHttp,
   );
+
+  // Initialize payment debug logger from build-time flag
+  PaymentDebugLogger.enabled = const bool.fromEnvironment('AYUR_PAYMENT_DEBUG', defaultValue: false);
 
   final container = ProviderContainer(
     overrides: [prefsStoreProvider.overrideWithValue(prefs)],
@@ -84,6 +90,15 @@ Future<void> main() async {
   // Riverpod 2.6 `ProviderContainer` has no `onDispose` callback.
   // The app-level container is process-lifetime, so the auth listener is meant
   // to live for the same lifetime as the app.
+
+  // Stripe deep links (mobile only): translate `ayurbd://...` into a
+  // go_router location. The router provider is read only after `restore()`
+  // above, so a cold-start redirect already has a resolved auth state and the
+  // guard lets the `/payment-success` route through instead of dumping the user
+  // on the splash until a refresh that never changes the URL.
+  deepLinkService.start((raw) {
+    container.read(routerProvider).go(DeepLinkService.toRouterLocation(raw));
+  });
 
   runApp(
     UncontrolledProviderScope(

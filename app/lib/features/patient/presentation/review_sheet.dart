@@ -107,10 +107,10 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
           ? 'You have already reviewed this.'
           : e.message;
       if (!e.isUnauthorized) showToast(context, message, error: true);
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
-      showToast(context, 'Something went wrong.', error: true);
+      showToast(context, e.toString(), error: true);
     }
   }
 

@@ -2594,7 +2594,7 @@ begin
          p_symptoms,
          p_notes,
 d.consultation_fee,
-          'pending_payment'::public.appointment_status,
+         'pending_payment'::public.appointment_status,
           'pending'::public.payment_state
     from public.doctors d
     join public.users u on u.id = d.user_id

@@ -27,7 +27,11 @@ The root `README.md` describes the dead PHP flow; `app/README.md` is current.
 
 Order is load-bearing: `PrefsStore.open()` → `Supabase.initialize(...)` with
 `SecureGotrueStorage` → subscribe to `authStateChanges` → `restore()`, all
-before `runApp`. Consequences for edits and tests:
+before `runApp`. After `restore()` but before `runApp`, `deepLinkService.start()`
+(core/deep_links/deep_link_service.dart) hooks the Stripe Checkout deep links
+(`ayurbd://payment-success…` / `.../payment-cancelled`) into the router — only
+after `restore()` has resolved, so a cold-start redirect lands straight on the
+route instead of being caught mid-splash. Consequences for edits and tests:
 
 - `prefsStoreProvider` (core/providers.dart) **throws** unless overridden —
   main() opens SharedPreferences and overrides it. Widget tests already do this

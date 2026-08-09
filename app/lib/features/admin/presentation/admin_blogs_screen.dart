@@ -73,8 +73,8 @@ class _AdminBlogsScreenState extends ConsumerState<AdminBlogsScreen> {
       if (mounted && !e.isUnauthorized) {
         showToast(context, e.message, error: true);
       }
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -110,8 +110,8 @@ class _AdminBlogsScreenState extends ConsumerState<AdminBlogsScreen> {
       if (mounted && !e.isUnauthorized) {
         showToast(context, e.message, error: true);
       }
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }

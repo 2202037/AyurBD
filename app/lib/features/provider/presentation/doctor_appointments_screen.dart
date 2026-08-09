@@ -56,8 +56,8 @@ class _DoctorAppointmentsScreenState
         showToast(context, e.message, error: true);
       }
       return false;
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
       return false;
     } finally {
       if (mounted) setState(() => _busy = false);

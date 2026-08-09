@@ -249,8 +249,8 @@ class _AdminProvidersScreenState extends ConsumerState<AdminProvidersScreen> {
       if (mounted) showToast(context, 'Fee updated to ${Fmt.money(fee)}.');
     } on ApiException catch (e) {
       if (mounted && !e.isUnauthorized) showToast(context, e.message, error: true);
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -382,8 +382,8 @@ class _AdminProvidersScreenState extends ConsumerState<AdminProvidersScreen> {
       }
     } on ApiException catch (e) {
       if (mounted && !e.isUnauthorized) showToast(context, e.message, error: true);
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }

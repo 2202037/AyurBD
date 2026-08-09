@@ -82,8 +82,8 @@ class _MyAppointmentsScreenState extends ConsumerState<MyAppointmentsScreen> {
         showToast(context, e.message, error: true);
       }
       return false;
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
       return false;
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -441,9 +441,9 @@ class _MethodSheetState extends ConsumerState<_MethodSheet> {
       if (mounted) {
         showToast(context, e.message, error: true);
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
-        showToast(context, 'Something went wrong.', error: true);
+        showToast(context, e.toString(), error: true);
       }
     } finally {
       if (mounted) setState(() => _stripeLoading = false);

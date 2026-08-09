@@ -35,6 +35,8 @@ import '../features/admin/presentation/admin_users_screen.dart';
 import '../features/appointments/presentation/book_appointment_screen.dart';
 import '../features/appointments/presentation/my_appointments_screen.dart';
 import '../features/appointments/presentation/payments_screen.dart';
+import '../features/appointments/presentation/payment_cancelled_screen.dart';
+import '../features/appointments/presentation/payment_success_screen.dart';
 import '../features/appointments/presentation/receipt_screen.dart';
 import '../features/auth/presentation/auth_controller.dart';
 import '../features/auth/presentation/clinic_register_screen.dart';
@@ -138,6 +140,14 @@ class Routes {
   static const String myReviews = '/my-reviews';
   static const String feedback = '/feedback';
 
+  // Stripe Checkout redirect targets. Reachable by any signed-in user: a
+  // patient with a live session on a cold-start deep link is the whole point,
+  // and there is nothing here that could harm another role (the success screen
+  // re-reads the appointment and its RLS-only patient edge case falls back to
+  // "not found").
+  static const String paymentSuccess = '/payment-success';
+  static const String paymentCancelled = '/payment-cancelled';
+
   // -- §13 static pages ---------------------------------------------------
   // Reachable without a session: a visitor deciding whether to sign up is
   // exactly who reads the terms and the privacy notice.
@@ -177,6 +187,7 @@ class Routes {
   static String orderDetail(int id) => '$orders/$id';
   static String blogPost(String slug) => '$blog/$slug';
   static String book(int doctorId) => '/book/$doctorId';
+  static String receiptFor(int appointmentId) => '$receipt/$appointmentId';
 
   static String placeList(PlaceKind kind) => switch (kind) {
         PlaceKind.clinic => clinics,
@@ -554,6 +565,23 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootKey,
         path: Routes.payments,
         builder: (_, __) => const PaymentsScreen(),
+      ),
+      // Stripe returns here after checkout succeeds (or the user cancels in the
+      // hosted page). The location carries the query string Stripe built, so the
+      // screen can re-read the appointment without trusting the URL.
+      GoRoute(
+        parentNavigatorKey: _rootKey,
+        path: Routes.paymentSuccess,
+        builder: (_, s) => PaymentSuccessScreen(
+          appointmentId:
+              int.tryParse(s.uri.queryParameters['appointment_id'] ?? ''),
+          sessionId: s.uri.queryParameters['session_id'],
+        ),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootKey,
+        path: Routes.paymentCancelled,
+        builder: (_, __) => const PaymentCancelledScreen(),
       ),
       GoRoute(
         parentNavigatorKey: _rootKey,

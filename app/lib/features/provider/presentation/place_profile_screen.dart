@@ -232,8 +232,8 @@ class _PlaceProfileScreenState extends ConsumerState<PlaceProfileScreen> {
       showToast(context, 'Profile updated.');
     } on ApiException catch (e) {
       if (mounted && !e.isUnauthorized) showToast(context, e.message, error: true);
-    } catch (_) {
-      if (mounted) showToast(context, 'Something went wrong.', error: true);
+    } catch (e) {
+      if (mounted) showToast(context, e.toString(), error: true);
     } finally {
       if (mounted) setState(() => _saving = false);
     }

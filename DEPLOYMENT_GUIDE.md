@@ -25,7 +25,23 @@ supabase secrets set SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...
 supabase secrets set SUPABASE_ANON_KEY=eyJhbGc...
 
 # App URL for redirects
-supabase secrets set APP_URL=https://your-app-domain.com
+# APP_URL is the ONLY switch that decides where Stripe returns the user after
+# checkout. It must NEVER be the Supabase URL (the browser would request
+# `https://project.supabase.co/appointments/...`, which returns
+# `{"error":"requested path is invalid"}`).
+#
+#   Web (dev)      : APP_URL=http://localhost:62095   (use the port flutter run prints)
+#   Web (production): APP_URL=https://ayurbd.me
+#   Android / iOS   : APP_URL=ayurd://
+#
+# The Flutter web client builds on the original `/#/` hash router, so web
+# redirects are `APP_URL/#/payment-success?...` and just work on a deep link to
+# the checkout; mobile redirects are custom-scheme deep links the OS hands back
+# to the app. Set the secret per environment with the value that matches where
+# the app for THAT environment routes.
+supabase secrets set APP_URL=https://ayurbd.me # production web
+supabase secrets set APP_URL=http://localhost:62095 # local web dev
+supabase secrets set APP_URL=ayurbd:// # Android / iOS builds
 ```
 
 ### Stripe Dashboard Configuration
@@ -94,6 +110,28 @@ flutter build ipa --release
 
 # Web
 flutter build web --release
+```
+
+### 5b. Deep-link back into the mobile app
+Android is already configured: `android/app/src/main/AndroidManifest.xml` declares
+a `VIEW` intent-filter for the `ayurbd` scheme, and `app_links`
+(`lib/core/deep_links/deep_link_service.dart`) forwards it into GoRouter.
+
+iOS needs the same scheme declared in `ios/Runner/Info.plist` (an `ios/` target
+is not part of this repo yet, so add it when the target is created):
+
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>bd.ayur.app</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>ayurbd</string>
+    </array>
+  </dict>
+</array>
 ```
 
 ## Post-Deployment Verification
