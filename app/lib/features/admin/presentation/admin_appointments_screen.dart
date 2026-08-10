@@ -19,9 +19,14 @@ import 'widgets/admin_filter_bar.dart';
 
 const _statusFilters = <FilterOption>[
   (value: null, label: 'All'),
+  // Bookings holding a slot without payment. An admin verifying transfers
+  // needs to find these directly — they are the queue the manual-payment
+  // workflow actually works through.
+  (value: 'pending_payment', label: 'Unpaid'),
   (value: 'pending', label: 'Pending'),
   (value: 'confirmed', label: 'Confirmed'),
   (value: 'completed', label: 'Completed'),
+  (value: 'expired', label: 'Expired'),
   (value: 'cancelled', label: 'Cancelled'),
 ];
 

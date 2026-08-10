@@ -219,8 +219,12 @@ class StatusPill extends StatelessWidget {
   }
 }
 
-/// Network image with a placeholder and a graceful fallback. Relative paths from
-/// the API are resolved against [AppConfig.assetBaseUrl].
+/// Network image with a placeholder and a graceful fallback.
+///
+/// Paths arrive here already absolute: each repository maps its storage columns
+/// through [SupabaseStorage] before building a model, so this widget never
+/// resolves a base URL itself. A non-absolute value is a leftover PHP-era path
+/// and draws the placeholder — see [AppConfig.resolveAsset].
 class RemoteImage extends StatelessWidget {
   const RemoteImage({
     super.key,

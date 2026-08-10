@@ -28,6 +28,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/constants/app_theme.dart';
 import '../../../core/network/api_exception.dart';
+import '../../../core/utils/idempotency.dart';
 import '../../../core/utils/validators.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../models/pharmacy_models.dart';
@@ -57,6 +58,19 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   bool _busy = false;
   Map<String, String> _serverErrors = const {};
 
+  /// Identifies *this checkout attempt* to the server, across every retry of
+  /// it. `_busy` stops a second tap while the first is in flight, but it cannot
+  /// help once the request has already left: a lost reply, a killed app or a
+  /// pulled-down network all leave the user tapping again with no idea whether
+  /// the order exists. The token makes that second call resolve to the first
+  /// call's order rather than a second one.
+  ///
+  /// It is deliberately minted once, here, and *not* renewed on failure — a
+  /// failed attempt is the exact case the key has to cover. It is renewed only
+  /// once an order is known to exist, so a user who somehow returns to this
+  /// form is starting a genuinely new basket.
+  final _checkoutToken = IdempotencyToken('checkout');
+
   @override
   void initState() {
     super.initState();
@@ -79,6 +93,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   }
 
   Future<void> _placeOrder() async {
+    // Re-entrancy guard. `BlockingOverlay` already covers the screen, but a
+    // fast double tap can land two callbacks before the first frame with the
+    // overlay is built, and the second would spend a network round trip only
+    // to be deduplicated server-side. Cheaper to stop it here.
+    if (_busy) return;
+
     setState(() => _serverErrors = const {});
     if (!(_form.currentState?.validate() ?? false)) return;
     FocusScope.of(context).unfocus();
@@ -92,7 +112,14 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
             name: _name.text,
             city: _city.text,
             notes: _notes.text,
+            idempotencyKey: _checkoutToken.value,
           );
+
+      // An order now exists under this key. Anything the user starts after
+      // this point is a new basket, so the key must not be reused — otherwise
+      // the next checkout would replay this order instead of placing one.
+      _checkoutToken.renew();
+
       if (!mounted) return;
       // The server already deleted the cart rows in the same transaction.
       ref.read(cartControllerProvider.notifier).clearLocally();
@@ -109,9 +136,22 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       });
       _form.currentState?.validate();
 
+      // A previous attempt of this same checkout got through and is being
+      // written right now. Nothing is wrong and nothing more should be sent;
+      // show the user where their order went instead of an error they would
+      // reasonably respond to by trying again.
+      if (e.hasCode('DUPLICATE_ORDER')) {
+        ref.read(cartControllerProvider.notifier).clearLocally();
+        ref.invalidate(ordersProvider);
+        if (!mounted) return;
+        showToast(context, e.message);
+        context.pushReplacement(Routes.orders);
+        return;
+      }
+
       if (e.isConflict || e.statusCode == 422) {
-        // Stock moved under us. Refresh so the cart shows the new issue flags,
-        // then send the user back to deal with them.
+        // Stock moved under us, or the cart is empty. Refresh so the cart shows
+        // the new issue flags, then send the user back to deal with them.
         await ref.read(cartControllerProvider.notifier).refresh().catchError((_) {});
         if (!mounted) return;
         showToast(context, e.message, error: true);
@@ -119,10 +159,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
         return;
       }
       showToast(context, e.message, error: true);
-    } catch (e) {
+    } catch (e, st) {
+      // Not an ApiException, so this is a bug rather than a refusal. The detail
+      // belongs in the log; `e.toString()` on screen would have shown the user
+      // a Dart type name or a raw Postgres sentence.
+      debugPrint('Checkout failed: $e\n$st');
       if (!mounted) return;
       setState(() => _busy = false);
-      showToast(context, e.toString(), error: true);
+      showToast(
+        context,
+        'Something went wrong placing your order. Please try again.',
+        error: true,
+      );
     }
   }
 

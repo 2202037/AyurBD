@@ -138,6 +138,7 @@ class AppColors {
       case 'published':
         return Icons.check_circle_outline_rounded;
       case 'pending':
+      case 'pending_payment':
       case 'processing':
       case 'shipped':
       case 'draft':
@@ -303,6 +304,11 @@ class AppSemantic {
       case 'published':
         return success;
       case 'pending':
+      // A held slot awaiting money reads as the same kind of "not settled yet"
+      // as `pending`, and deliberately so: it is the state a booking opens in,
+      // and inventing a fourth colour for it would make the common case the
+      // loudest thing on the screen.
+      case 'pending_payment':
       case 'processing':
       case 'shipped':
       case 'draft':

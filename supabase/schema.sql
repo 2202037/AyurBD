@@ -10,10 +10,53 @@
 --     1. schema.sql        (this file)
 --     2. rls_policies.sql
 --     3. storage_setup.sql
+--     4. migrations/*.sql  in filename order  <-- NOT OPTIONAL
 --
 -- Run it in the Supabase SQL Editor, or `supabase db push`. It is
 -- idempotent: re-running drops and recreates its own objects only, and
 -- never touches auth.* or storage.* tables beyond adding policies.
+--
+-- ---------------------------------------------------------------------
+-- THIS FILE IS NOT THE WHOLE TRUTH.  READ THIS BEFORE BOOTSTRAPPING.
+--
+-- schema.sql is the converted MySQL structure. It is the STARTING point,
+-- not the current one. A database built from steps 1-3 alone compiles,
+-- accepts writes, and is WRONG in ways that do not announce themselves:
+-- checkout fails with "orders must be created through
+-- public.place_order()", and paying for an appointment fails with
+-- "Appointment is not awaiting payment".
+--
+-- Both are caused by objects defined BELOW in this file and corrected in
+-- migrations/20260809000002_payment_architecture_fix.sql:
+--
+--   guard_orders_insert()        line ~2507  trusts session_user, which
+--   guard_appointments_insert()  line ~2144  SECURITY DEFINER does not
+--   guard_order_items_insert()               change. Every guard therefore
+--   guard_payments_insert()                  fires against the very
+--   guard_provider_insert()                  functions it should trust.
+--   guard_reviews_insert()                   Replaced by write_is_trusted().
+--
+--   guard_appointments_insert()  also re-stamps status := 'pending' on
+--                                insert, overwriting the 'pending_payment'
+--                                that appointments_book() just wrote.
+--
+--   place_order()                line ~2626  no idempotency key, no
+--                                advisory lock: a double tap or a retried
+--                                request places two orders.
+--
+--   expire_stale_appointments()  line ~2741  never sweeps 'pending_payment',
+--                                so unpaid holds are kept forever.
+--
+-- The migration supersedes each of these with CREATE OR REPLACE and adds
+-- appointment_payability(), submit_manual_payment(), gateway_payment_begin()
+-- and orders.idempotency_key. Running it after this file converges; running
+-- this file after it REGRESSES the database.
+--
+-- The long-term remedy is to regenerate this file from a migrated database
+-- (`supabase db dump --schema public`) so there is one source of truth
+-- again. Until that is done, treat migrations/ as authoritative wherever
+-- the two disagree.
+-- ---------------------------------------------------------------------
 --
 -- ---------------------------------------------------------------------
 -- CONVERSION DECISIONS â€” the non-obvious ones, so review is possible.

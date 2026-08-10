@@ -1,0 +1,30 @@
+-- =====================================================================
+-- 20260809000001_appointment_status_pending_payment.sql
+--
+-- Adds 'pending_payment' to public.appointment_status — and NOTHING else.
+--
+-- WHY THIS IS ITS OWN FILE
+--   `ALTER TYPE ... ADD VALUE` cannot be used by any statement in the same
+--   transaction that added it. Supabase runs each migration file in one
+--   transaction, so the moment a later statement in the same file writes
+--   'pending_payment'::public.appointment_status, Postgres raises
+--   "unsafe use of new value ... of enum type". That is exactly what
+--   20260808000001_stripe_payment_integration.sql did, and it is why
+--   20260807220207_fix_booking_status_pending_payment.sql (which uses the
+--   value) is ordered BEFORE the file that creates it.
+--
+--   Keeping the ADD VALUE alone means it commits on its own and every later
+--   migration can rely on it.
+--
+-- WHAT 'pending_payment' MEANS
+--   The appointment slot is held, the fee is known, and the patient has not
+--   paid yet. It is the only state from which a payment may be started. It
+--   is a transient state: verifying a payment always moves the appointment
+--   out of it (to 'confirmed' for a gateway payment, to 'pending' for a
+--   manual payment awaiting the provider's confirmation), and the stale
+--   sweep expires it once the slot is in the past.
+--
+-- Idempotent: IF NOT EXISTS.
+-- =====================================================================
+
+alter type public.appointment_status add value if not exists 'pending_payment';

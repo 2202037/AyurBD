@@ -37,6 +37,12 @@ Future<void> main() async {
 
   final prefs = await PrefsStore.open();
 
+  // Refuses to start against a backend that could not work on device — an http
+  // scheme, or a loopback host that on a phone means the phone itself. Cheaper
+  // to fail here with a named error than to ship an APK whose every request
+  // dies at the socket.
+  AppConfig.assertValidBackendConfig();
+
   await Supabase.initialize(
     url: AppConfig.supabaseUrl,
     anonKey: AppConfig.supabaseAnonKey,

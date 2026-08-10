@@ -266,6 +266,17 @@ class PharmacyRepository {
   /// phone are used when [name] or [phone] is omitted, and a 422 is raised if
   /// that still leaves either blank — better than a constraint violation the
   /// user cannot act on.
+  ///
+  /// ### [idempotencyKey]
+  ///
+  /// A value stable across retries of *the same* checkout attempt — mint it once
+  /// when the screen opens, keep it while the user retries, replace it only once
+  /// an order actually exists. `place_order()` stores it on the order under a
+  /// unique-per-user index, so a second call with the same key returns the order
+  /// the first call created instead of charging the basket twice. This is what
+  /// makes a double tap, a dropped response, or a resumed app safe; it is not a
+  /// nicety, because the first call may well have committed before the network
+  /// gave up on us.
   Future<Order> checkout({
     required String address,
     required PaymentMethodOption paymentMethod,
@@ -273,25 +284,41 @@ class PharmacyRepository {
     String? name,
     String? city,
     String? notes,
+    String? idempotencyKey,
   }) async {
     return SupabaseService.guard(() async {
       final userId = _requireUser();
+      final key = _clean(idempotencyKey);
 
       // Refuse before writing anything if any line is no longer fulfillable.
       // The RPC would refuse too (P0001, "insufficient stock"), but this gives
       // the caller the same pre-flight message it always had.
       final lines = await _cartRows(userId);
       if (lines.isEmpty) {
-        throw ApiException(message: 'Your cart is empty.', statusCode: 422);
-      }
-      for (final line in lines) {
-        final issue = _issueFor(line);
-        if (issue != null) {
+        // An empty cart is ambiguous when a key is in play: either nothing was
+        // ever added, or a previous attempt succeeded, emptied the cart, and
+        // lost its reply on the way back. Only the server can tell those apart
+        // — it holds the key — so hand it the call and let it either replay the
+        // order or say the cart is empty. Deciding here would turn a completed
+        // order into a dead end.
+        if (key == null) {
           throw ApiException(
-            message: '${Fmt.str(line.name, 'A product')} is no longer '
-                'available in that quantity. Please review your cart.',
-            statusCode: 409,
+            message: 'Your cart is empty.',
+            statusCode: 422,
+            code: 'CART_EMPTY',
           );
+        }
+      } else {
+        for (final line in lines) {
+          final issue = _issueFor(line);
+          if (issue != null) {
+            throw ApiException(
+              message: '${Fmt.str(line.name, 'A product')} is no longer '
+                  'available in that quantity. Please review your cart.',
+              statusCode: 409,
+              code: 'OUT_OF_STOCK',
+            );
+          }
         }
       }
 
@@ -321,6 +348,10 @@ class PharmacyRepository {
       // subtotal from the products table, decrements stock atomically
       // (WHERE stock >= quantity makes a short line abort, not go negative),
       // snapshots the line items, empties the cart, and returns the row.
+      //
+      // It is also the ONLY way an order may be created — `guard_orders_insert`
+      // rejects any other INSERT into `orders`. That rule is deliberate and is
+      // not to be worked around here.
       final created = await _sb.rpc<Map<String, dynamic>>(
         'place_order',
         params: {
@@ -330,6 +361,7 @@ class PharmacyRepository {
           if (cityValue != null) 'p_delivery_city': cityValue,
           'p_payment_method': paymentMethod.value,
           if (notes != null && notes.trim().isNotEmpty) 'p_notes': notes.trim(),
+          if (key != null) 'p_idempotency_key': key,
         },
       );
 
@@ -613,6 +645,15 @@ class PharmacyRepository {
   static String? _firstNonEmptyOrNull(List<Object?> candidates) {
     final s = _firstNonEmpty(candidates);
     return s.isEmpty ? null : s;
+  }
+
+  /// Trimmed, or null when there is nothing left. Used for the idempotency key
+  /// so that an empty string never reaches the RPC: `place_order()` treats a
+  /// non-null key as "look this up first", and '' would collide with every
+  /// other blank key the same user ever sent.
+  static String? _clean(String? v) {
+    final t = v?.trim() ?? '';
+    return t.isEmpty ? null : t;
   }
 
   String _requireUser() {

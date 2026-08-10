@@ -22,6 +22,10 @@ import 'provider_controllers.dart';
 
 const _filters = <({String? value, String label})>[
   (value: null, label: 'All'),
+  // Bookings whose slot is held but unpaid. They sit under "All" otherwise,
+  // and a doctor filtering to "Pending" would not see them at all — which
+  // reads as bookings quietly disappearing.
+  (value: 'pending_payment', label: 'Unpaid'),
   (value: 'pending', label: 'Pending'),
   (value: 'confirmed', label: 'Confirmed'),
   (value: 'completed', label: 'Completed'),
@@ -236,22 +240,29 @@ class _DoctorAppointmentsScreenState
               ? 'Bookings from patients will appear here.'
               : 'Nothing matches those filters.',
           itemBuilder: (context, a, _) {
+            // A booking opens at `pending_payment` and only becomes `pending`
+            // once the money is verified. Gating on `pending` alone left the
+            // doctor looking at a card with no buttons at all for the state
+            // most new bookings are actually in — including no way to decline
+            // one. Both states are treated the same here, which is what the
+            // screen did before `pending_payment` existed.
+            final isOpen =
+                a.status == 'pending' || a.status == 'pending_payment';
+
             // The escrow gate: a paid booking (fee > 0) is only confirmable
             // once the admin has verified the payment, which credits the
             // payout. Before that the button is shown disabled with the reason
             // — the server enforces this too (`aa_guard_confirm`).
             final awaitingPayment =
-                a.status == 'pending' && a.fee > 0 && a.paymentStatus != 'paid';
+                isOpen && a.fee > 0 && a.paymentStatus != 'paid';
             return _PatientCard(
               appointment: a,
               awaitingPayment: awaitingPayment,
-              onConfirm: a.status == 'pending'
-                  ? () => _setStatus(a, 'confirmed')
-                  : null,
+              onConfirm: isOpen ? () => _setStatus(a, 'confirmed') : null,
               onComplete: a.status == 'confirmed'
                   ? () => _setStatus(a, 'completed')
                   : null,
-              onCancel: (a.status == 'pending' || a.status == 'confirmed')
+              onCancel: (isOpen || a.status == 'confirmed')
                   ? () => _setStatus(a, 'cancelled')
                   : null,
             );

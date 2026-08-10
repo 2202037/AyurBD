@@ -19,11 +19,12 @@
 /// `aa_guard_appointments` trigger blocks any later change to it, along with
 /// `payment_status` and the two verification columns.
 ///
-/// **Payment.** [pay] writes a `payments` row and nothing else. It deliberately
-/// does not touch `appointments.payment_status` — only the admin verification
-/// path (`payments_apply_verification`) may, and the guard trigger refuses the
-/// write anyway. The appointment is re-read afterwards so the caller still gets
-/// the row back, which is what the old `{appointment}` response gave it.
+/// **Payment.** [pay] and [createStripeCheckoutSession] are thin delegates to
+/// [PaymentService]; this file no longer writes to `payments` itself. Neither
+/// path touches `appointments.payment_status` — only the verification path
+/// (`payments_apply_verification`) may, and the column guard refuses the write
+/// anyway. The appointment is re-read after a submission so the caller still
+/// gets the row back, which is what the old `{appointment}` response gave it.
 library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -37,6 +38,7 @@ import '../../../core/providers.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/utils/payment_debug_logger.dart';
 import '../../../models/appointment_models.dart';
+import '../../payment/data/payment_service.dart';
 
 /// Unchanged: `works_on_day` tells the screen whether the doctor practises at
 /// all on that date, which is a very different message from "fully booked".
@@ -63,9 +65,13 @@ class SlotsResult {
 }
 
 class AppointmentRepository {
-  AppointmentRepository(this._sb);
+  AppointmentRepository(this._sb, this._payments);
 
   final SupabaseService _sb;
+
+  /// Every payment operation goes through here rather than being written
+  /// inline. See [PaymentService] for why one owner matters.
+  final PaymentService _payments;
 
   /// Columns of `appointments` the app reads, plus the doctor embed that
   /// supplies the name/specialty/chamber the list rows show.
@@ -275,11 +281,21 @@ class AppointmentRepository {
 
   /// Submits payment details for admin verification.
   ///
-  /// This does **not** mark the appointment paid: it writes a `payments` row
-  /// with `payment_status = 'pending'` and leaves `appointments.payment_status`
-  /// alone. Only an admin, after checking the reference against a statement, can
-  /// move it — anything else would let a made-up transaction id book revenue
-  /// that never arrived.
+  /// The signature and return type are unchanged, but the work now happens in
+  /// [PaymentService], which calls the `submit_manual_payment()` RPC. The
+  /// direct `payments` INSERT this used to perform is gone, and deliberately
+  /// so: it read the fee with one query and wrote the row with another, which
+  /// left a window in which the appointment could be cancelled, refunded or
+  /// paid by the gateway between the two. The RPC takes an advisory lock on
+  /// the appointment, re-checks payability, reads the amount itself and
+  /// returns any pending submission that already exists instead of writing a
+  /// second one — so a double tap or a retry after a lost response produces
+  /// exactly one payment row.
+  ///
+  /// It still does **not** mark the appointment paid. The row is written with
+  /// `payment_status = 'pending'`; only an admin checking the reference
+  /// against a statement can move it, because anything else would let a
+  /// made-up transaction id book revenue that never arrived.
   ///
   /// [transactionRef] should be collected for every method except Cash.
   Future<Appointment> pay({
@@ -289,130 +305,42 @@ class AppointmentRepository {
     String? senderNumber,
     String? notes,
   }) async {
-    return SupabaseService.guard(() async {
-      final userId = _requireUser();
+    _requireUser();
 
-      // `payments.amount` is NOT NULL and must be the appointment's own fee —
-      // taking it from the caller would let the client decide what it owed.
-      final appointment = await _sb
-          .db('appointments')
-          .select('id, fee')
-          .eq('id', appointmentId)
-          .eq('patient_id', userId)
-          .maybeSingle();
-
-      if (appointment == null) {
-        throw ApiException(message: 'Appointment not found.', statusCode: 404);
-      }
-
-      await _sb.db('payments').insert({
-        'appointment_id': appointmentId,
-        'user_id': userId,
-        'amount': Fmt.toDouble(appointment['fee']),
-        'payment_method': method.value,
-        if (transactionRef != null && transactionRef.trim().isNotEmpty)
-          'transaction_id': transactionRef.trim(),
-        if (senderNumber != null && senderNumber.trim().isNotEmpty)
-          'sender_number': senderNumber.trim(),
-        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
-      });
-
-      // Re-read so the caller gets the appointment back, as the old
-      // `{appointment}` response did. `payment_review` now reads 'pending',
-      // which is what drives the "Awaiting verification" pill.
-      final row = await _sb
-          .db('appointments')
-          .select(_columns)
-          .eq('id', appointmentId)
-          .single();
-
-      return Appointment.fromJson(_shape(row));
-    });
-  }
-
-  /// Creates a Stripe Checkout Session for the appointment.
-  ///
-  /// Calls the `create-checkout-session` Edge Function which:
-  /// 1. Authenticates the user
-  /// 2. Validates the appointment belongs to the patient and is in pending_payment state
-  /// 3. Reads the fee from the database (never from client)
-  /// 4. Creates a Stripe Checkout Session
-  /// 5. Returns the checkout URL and session ID
-  Future<StripeCheckoutSession> createStripeCheckoutSession({
-    required int appointmentId,
-  }) async {
-    final patientId = _requireUser();
-
-    PaymentDebugLogger.logCreateCheckoutRequest(
+    await _payments.submitManualPayment(
       appointmentId: appointmentId,
-      patientId: patientId,
+      method: method,
+      transactionRef: transactionRef,
+      senderNumber: senderNumber,
+      notes: notes,
     );
 
-    return SupabaseService.guard(() async {
-      final result = await _sb.functionsInvoke<Map<String, dynamic>>(
-        'create-checkout-session',
-        body: {'appointment_id': appointmentId},
-      );
-
-      // Parse structured error response from Edge Function
-      if (result['success'] == false) {
-        final code = result['code'] as String? ?? 'UNKNOWN_ERROR';
-        final message = result['message'] as String? ?? 'An unexpected error occurred.';
-        final details = result['details'] as Map<String, dynamic>?;
-
-        PaymentDebugLogger.logError(
-          event: 'CREATE_CHECKOUT_SESSION_FAILED',
-          appointmentId: appointmentId,
-          patientId: patientId,
-          error: '$code: $message',
-          stackTrace: StackTrace.current,
-          details: details,
-        );
-
-        throw ApiException(
-          message: message,
-          statusCode: _statusCodeForErrorCode(code),
-        );
-      }
-
-      final session = StripeCheckoutSession.fromJson(result['data'] as Map<String, dynamic>);
-
-      PaymentDebugLogger.logStripeResponse(
-        appointmentId: appointmentId,
-        patientId: patientId,
-        stripeSessionId: session.sessionId,
-        checkoutUrl: session.checkoutUrl,
-        paymentIntentId: '', // Will be available after webhook
-      );
-
-      return session;
-    });
+    // Re-read so the caller gets the appointment back, as the old
+    // `{appointment}` response did. `payment_review` now reads 'pending',
+    // which is what drives the "Awaiting verification" pill.
+    return byId(appointmentId);
   }
 
-  /// Maps Edge Function error codes to HTTP status codes for ApiException.
-  int _statusCodeForErrorCode(String code) {
-    switch (code) {
-      case 'UNAUTHORIZED':
-        return 401;
-      case 'VALIDATION_ERROR':
-        return 400;
-      case 'APPOINTMENT_NOT_FOUND':
-        return 404;
-      case 'INVALID_APPOINTMENT_STATUS':
-      case 'PAYMENT_ALREADY_PROCESSED':
-      case 'INVALID_AMOUNT':
-      case 'DOCTOR_NOT_FOUND':
-      case 'DOCTOR_FEE_MISSING':
-        return 400;
-      case 'STRIPE_NOT_CONFIGURED':
-      case 'APP_URL_NOT_CONFIGURED':
-        return 500;
-      case 'UNEXPECTED_SERVER_ERROR':
-        return 500;
-      default:
-        return 400;
-    }
+  /// Creates — or re-opens — a Stripe Checkout Session for the appointment.
+  ///
+  /// Delegates to [PaymentService.startCardCheckout]. The Edge Function no
+  /// longer decides for itself whether the appointment is payable: it calls
+  /// `gateway_payment_begin()`, which applies the same rule the database
+  /// applies to every other payment path and hands back an already-open
+  /// checkout rather than minting a second one.
+  Future<StripeCheckoutSession> createStripeCheckoutSession({
+    required int appointmentId,
+  }) {
+    _requireUser();
+    return _payments.startCardCheckout(appointmentId: appointmentId);
   }
+
+  /// The server's answer to "can this be paid, and if not, why not".
+  ///
+  /// Exposed so a screen can explain a disabled button with the real reason
+  /// instead of guessing from the model.
+  Future<Payability> payability(int appointmentId) =>
+      _payments.payability(appointmentId);
 
   Future<Paged<Payment>> payments({
     int page = 1,
@@ -684,5 +612,25 @@ class AppointmentRepository {
 }
 
 final appointmentRepositoryProvider = Provider<AppointmentRepository>(
-  (ref) => AppointmentRepository(ref.watch(supabaseServiceProvider)),
+  (ref) => AppointmentRepository(
+    ref.watch(supabaseServiceProvider),
+    ref.watch(paymentServiceProvider),
+  ),
 );
+
+/// Diagnostics for the payment path, for support and for the debug screen.
+///
+/// Lives here rather than in `core/providers.dart` because it calls a method on
+/// this repository. Core is the layer features are built on; when it imported a
+/// feature back the import path had to climb out of `lib/` altogether
+/// (`../../features/...` from `lib/core/` resolves to `app/features/`, which
+/// does not exist) and the file would not compile.
+///
+/// Pass the appointment id to check one booking, or null for the system-wide
+/// checks only.
+final paymentHealthCheckProvider =
+    FutureProvider.family<PaymentHealthReport, int?>((ref, appointmentId) async {
+  final repo = ref.watch(appointmentRepositoryProvider);
+  return repo.checkPaymentHealth(appointmentId: appointmentId);
+});
+

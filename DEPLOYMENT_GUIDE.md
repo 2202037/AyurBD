@@ -25,23 +25,33 @@ supabase secrets set SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...
 supabase secrets set SUPABASE_ANON_KEY=eyJhbGc...
 
 # App URL for redirects
-# APP_URL is the ONLY switch that decides where Stripe returns the user after
-# checkout. It must NEVER be the Supabase URL (the browser would request
+# APP_URL decides where Stripe returns the user after checkout. It must NEVER
+# be the Supabase URL (the browser would request
 # `https://project.supabase.co/appointments/...`, which returns
 # `{"error":"requested path is invalid"}`).
 #
-#   Web (dev)      : APP_URL=http://localhost:62095   (use the port flutter run prints)
-#   Web (production): APP_URL=https://ayurbd.me
-#   Android / iOS   : APP_URL=ayurd://
+# APP_URL is the FALLBACK / default target. It cannot be right for every
+# platform at once — one Supabase project serves web and mobile from the same
+# deployed Edge Function, and a single value would send Android users to a web
+# origin (on a phone, `localhost` is the phone) or send browsers to a
+# `ayurbd://` scheme they cannot follow.
 #
-# The Flutter web client builds on the original `/#/` hash router, so web
-# redirects are `APP_URL/#/payment-success?...` and just work on a deep link to
-# the checkout; mobile redirects are custom-scheme deep links the OS hands back
-# to the app. Set the secret per environment with the value that matches where
-# the app for THAT environment routes.
-supabase secrets set APP_URL=https://ayurbd.me # production web
-supabase secrets set APP_URL=http://localhost:62095 # local web dev
-supabase secrets set APP_URL=ayurbd:// # Android / iOS builds
+# So the Flutter client now sends `return_target` with each request:
+#   * mobile -> the literal `ayurbd` custom scheme
+#   * web    -> `Uri.base.origin`, i.e. whatever origin is serving the UI
+#
+# The Edge Function validates that against an allowlist and falls back to
+# APP_URL if it does not match. Set APP_WEB_ORIGINS to every web origin you
+# want to permit, comma-separated. Anything not listed is refused and silently
+# falls back, so an attacker cannot aim the redirect (which carries session_id)
+# at a host of their choosing.
+supabase secrets set APP_URL=https://ayurbd.me
+supabase secrets set APP_WEB_ORIGINS=https://ayurbd.me,http://localhost:62095
+
+# Note: the localhost entry above is the Flutter WEB DEV SERVER origin, which is
+# legitimate. It is never the Supabase backend URL — that is always
+# https://cbmmhygivrejcjpfodkr.supabase.co on every platform. Drop the localhost
+# entry from APP_WEB_ORIGINS in a production-only project.
 ```
 
 ### Stripe Dashboard Configuration

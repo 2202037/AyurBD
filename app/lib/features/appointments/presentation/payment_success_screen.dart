@@ -25,6 +25,7 @@ import '../../../core/network/api_exception.dart';
 import '../../../core/utils/payment_debug_logger.dart';
 import '../../../models/appointment_models.dart';
 import '../data/appointment_repository.dart';
+import 'my_appointments_screen.dart' show myAppointmentsProvider;
 
 /// Polling budget for the webhook to catch up with the redirect.
 ///
@@ -81,6 +82,11 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
       try {
         final appointment = await repo.byId(_id);
         if (appointment.isPaid) {
+          // The list behind this screen still holds the pre-payment row. Drop
+          // it so returning to "My appointments" shows a paid, confirmed
+          // booking rather than a stale one with a Pay button on it.
+          ref.invalidate(myAppointmentsProvider);
+
           if (mounted) {
             setState(() {
               _appointment = appointment;
@@ -110,10 +116,6 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
         }
         // Still pending: give the webhook a moment, then re-read.
       } on ApiException catch (e) {
-        if (mounted) {
-          setState(() => _error = e.message);
-        }
-
         PaymentDebugLogger.logError(
           event: 'VERIFY_PAYMENT_FAILED',
           appointmentId: _id,
@@ -123,14 +125,23 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
           statusCode: e.statusCode,
         );
 
+        // 404 here means the appointment is not readable — it was cancelled, or
+        // this is not the patient who booked it. More polling cannot change
+        // that, so stop rather than spend eight seconds on it.
         if (e.statusCode == 404) {
-          _status = _VerifyStatus.failed;
+          if (mounted) {
+            setState(() {
+              _error = e.message;
+              _status = _VerifyStatus.failed;
+            });
+          }
           return;
         }
         // Network blip during polling — keep trying until the budget runs out.
+        // The message is not shown while polling: the user is looking at
+        // "Verifying payment…", and flashing an error under it during a retry
+        // that may well succeed reads as a failure that has not happened.
       } catch (e, st) {
-        if (mounted) setState(() => _error = 'Could not verify the payment: $e');
-
         PaymentDebugLogger.logError(
           event: 'VERIFY_PAYMENT_ERROR',
           appointmentId: _id,
@@ -138,6 +149,9 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
           error: e.toString(),
           stackTrace: st,
         );
+        // Deliberately not surfaced verbatim — `e.toString()` here is a Dart
+        // type name or a raw driver sentence, which tells a patient nothing
+        // about their money.
       }
 
       if (!mounted) return;

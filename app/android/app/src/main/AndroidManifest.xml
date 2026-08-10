@@ -1,4 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for every network call the app makes: Supabase PostgREST,
+         GoTrue, Storage and the Stripe Edge Functions all go over the internet.
+
+         This has to live in the MAIN manifest, not only in src/debug and
+         src/profile. Those two overlays ship with the Flutter template and are
+         merged into debug and profile builds only, so a missing entry here is
+         invisible during `flutter run` and breaks nothing until a release APK
+         reaches a real user, where every request fails at the socket with a
+         SecurityException and the app looks like a dead backend.
+
+         Verified against the built artefact, not just the source: before this
+         line was added, the binary manifest inside
+         build/app/outputs/flutter-apk/app-release.apk contained no
+         android.permission.INTERNET string at all. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="ayur"
         android:name="${applicationName}"

@@ -8,12 +8,24 @@
 /// `canceled` on the way in. `expired` (a past unpaid slot) is included too:
 /// Postgrest filters it like any other value, and it is worth being able to see
 /// at a glance which bookings lapsed without being marked cancelled.
+///
+/// ## Paying
+///
+/// Nothing on this screen decides whether an appointment may be paid.
+/// [PaymentService] asks the database (`appointment_payability`) and the write
+/// paths re-check, so a refusal arrives as a [PaymentFailure] with a sentence
+/// already fit to show. Two of those refusals are not errors at all —
+/// ALREADY_PAID and PAYMENT_PENDING_VERIFICATION mean the patient's money is
+/// fine and this screen is simply stale — so they refresh the row instead of
+/// raising a red toast that would invite a second payment.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import 'package:supabase_flutter/supabase_flutter.dart' show FunctionException;
 
 import '../../../app/router.dart';
 import '../../../core/constants/app_theme.dart';
@@ -26,6 +38,8 @@ import '../../../core/widgets/state_views.dart';
 import '../../../models/appointment_models.dart';
 import '../../../models/content_models.dart';
 import '../../patient/presentation/review_sheet.dart';
+import '../../payment/data/payment_service.dart';
+import '../../../core/utils/payment_debug_logger.dart';
 import '../data/appointment_repository.dart';
 
 /// `null` means "no filter" — the parameter is then omitted entirely rather
@@ -46,6 +60,10 @@ final myAppointmentsProvider =
 
 const _filters = <({String? value, String label})>[
   (value: null, label: 'All'),
+  // A booking now opens at `pending_payment` and only reaches `pending` once
+  // the money is verified. Without a chip for it, the most urgent thing a
+  // patient owns — a held slot on a clock — was reachable only under "All".
+  (value: 'pending_payment', label: 'To pay'),
   (value: 'pending', label: 'Pending'),
   (value: 'confirmed', label: 'Confirmed'),
   (value: 'completed', label: 'Completed'),
@@ -130,22 +148,78 @@ class _MyAppointmentsScreenState extends ConsumerState<MyAppointmentsScreen> {
         amount: a.fee,
         appointmentId: a.id,
         onStripeCheckout: (session) async {
-          final url = session.checkoutUrl;
-          if (await canLaunchUrl(Uri.parse(url))) {
-            await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+          final uri = Uri.tryParse(session.checkoutUrl);
+          if (uri == null ||
+              !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+            // Previously a failed launch did nothing at all, leaving the user
+            // looking at a sheet that had apparently ignored them.
+            if (mounted) {
+              showToast(
+                context,
+                'Could not open the payment page. Please try again.',
+                error: true,
+              );
+            }
           }
         },
       ),
     );
     if (choice == null) return;
-    final ok = await _run(() => ref.read(appointmentRepositoryProvider).pay(
-          appointmentId: a.id,
-          method: choice.method,
-          transactionRef: choice.transactionRef,
-          senderNumber: choice.senderNumber,
-        ));
-    if (ok && mounted) {
-      showToast(context, 'Payment submitted. It will show as paid once verified.');
+
+    setState(() => _busy = true);
+    try {
+      final updated = await ref.read(appointmentRepositoryProvider).pay(
+            appointmentId: a.id,
+            method: choice.method,
+            transactionRef: choice.transactionRef,
+            senderNumber: choice.senderNumber,
+          );
+      _controller.replaceWhere((x) => x.id == updated.id, updated);
+      if (mounted) {
+        showToast(
+          context,
+          'Payment submitted. It will show as paid once verified.',
+        );
+      }
+    } on PaymentException catch (e) {
+      // The money is already accounted for; the row on screen is just behind.
+      // Telling the patient "that failed" here is how people pay twice.
+      if (e.failure.isBenign) {
+        await _refreshRow(a.id);
+        if (mounted) showToast(context, e.message);
+        return;
+      }
+      if (mounted && !e.isUnauthorized) {
+        showToast(context, e.message, error: true);
+      }
+      // A refusal about state — expired, cancelled, refunded — means this row is
+      // out of date whatever else happened, so re-read it and let the buttons
+      // settle to the truth.
+      if (e.failure == PaymentFailure.notPayable ||
+          e.failure == PaymentFailure.alreadyRefunded) {
+        await _refreshRow(a.id);
+      }
+    } on ApiException catch (e) {
+      if (mounted && !e.isUnauthorized) {
+        showToast(context, e.message, error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Re-reads one appointment and patches it in place.
+  ///
+  /// Used after a refusal that proves the list is stale. Failures are swallowed
+  /// on purpose: this runs while a message is already being shown, and a second
+  /// toast about a failed background refresh would only bury the first.
+  Future<void> _refreshRow(int id) async {
+    try {
+      final fresh = await ref.read(appointmentRepositoryProvider).byId(id);
+      if (!mounted) return;
+      _controller.replaceWhere((x) => x.id == fresh.id, fresh);
+    } catch (_) {
+      // Ignored deliberately — see above.
     }
   }
 
@@ -427,7 +501,14 @@ class _MethodSheetState extends ConsumerState<_MethodSheet> {
     ));
   }
 
+  /// Opens the hosted Stripe page.
+  ///
+  /// Tapping twice is safe and is not defended against beyond the in-flight
+  /// guard: `gateway_payment_begin()` hands back the checkout session that is
+  /// already open rather than creating a second one, so the second tap lands on
+  /// the same page — and on the same single charge — as the first.
   Future<void> _payWithStripe() async {
+    if (_stripeLoading) return;
     setState(() => _stripeLoading = true);
     try {
       final repo = ref.read(appointmentRepositoryProvider);
@@ -437,13 +518,90 @@ class _MethodSheetState extends ConsumerState<_MethodSheet> {
       if (mounted) {
         await widget.onStripeCheckout(session);
       }
+    } on PaymentException catch (e) {
+      if (!mounted) return;
+      // Already paid, or already awaiting verification: close the sheet and let
+      // the list refresh rather than leaving a pay button under the message.
+      if (e.failure.isBenign) {
+        showToast(context, e.message);
+        Navigator.of(context).pop();
+        return;
+      }
+      // Log the full error context for debugging during development.
+      PaymentDebugLogger.logError(
+        event: 'STRIPE_CHECKOUT_PAYMENT_EXCEPTION',
+        appointmentId: widget.appointmentId,
+        patientId: '', // not available here
+        error: e.toString(),
+        stackTrace: StackTrace.current,
+        details: {
+          'failure': e.failure.name,
+          'code': e.code,
+          'status_code': e.statusCode,
+        },
+      );
+      showToast(context, e.message, error: true);
     } on ApiException catch (e) {
       if (mounted) {
+        // Log the full error context for debugging during development.
+        PaymentDebugLogger.logError(
+          event: 'STRIPE_CHECKOUT_API_EXCEPTION',
+          appointmentId: widget.appointmentId,
+          patientId: '',
+          error: e.toString(),
+          stackTrace: StackTrace.current,
+          details: {
+            'code': e.code,
+            'status_code': e.statusCode,
+            'kind': e.kind.name,
+          },
+        );
         showToast(context, e.message, error: true);
       }
-    } catch (e) {
+    } on FunctionException catch (e) {
+      // Handle Edge Function errors that bypass the service layer translation.
+      // The create-checkout-session function returns 400 with
+      // {error: "Appointment is not awaiting payment"} when the appointment
+      // status is no longer payable.
+      if (e.status == 400) {
+        final details = e.details;
+        final errorMessage = details is Map ? details['error']?.toString() : null;
+        if (errorMessage != null &&
+            errorMessage.contains('Appointment is not awaiting payment')) {
+          if (mounted) {
+            PaymentDebugLogger.logError(
+              event: 'STRIPE_CHECKOUT_APPOINTMENT_NOT_AWAITING_PAYMENT',
+              appointmentId: widget.appointmentId,
+              patientId: '',
+              error: e.toString(),
+              stackTrace: StackTrace.current,
+            );
+            showToast(
+              context,
+              'This appointment has already been paid for or cannot be processed at this time.',
+              error: true,
+            );
+          }
+          return;
+        }
+      }
+      // Fall through to generic handler for other FunctionExceptions.
+      throw e;
+    } catch (e, st) {
+      // Unexpected error: log full details for debugging, show safe message.
+      PaymentDebugLogger.logError(
+        event: 'STRIPE_CHECKOUT_UNEXPECTED_ERROR',
+        appointmentId: widget.appointmentId,
+        patientId: '',
+        error: e.toString(),
+        stackTrace: st,
+      );
       if (mounted) {
-        showToast(context, e.toString(), error: true);
+        showToast(
+          context,
+          'Online payment is temporarily unavailable. Please try again shortly.',
+          error: true,
+        );
       }
     } finally {
       if (mounted) setState(() => _stripeLoading = false);

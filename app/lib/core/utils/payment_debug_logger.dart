@@ -29,11 +29,15 @@ class PaymentDebugLogger {
   static void log({
     required String event,
     int? appointmentId,
+    int? orderId,
+    int? paymentId,
+    String? transactionId,
     String? patientId,
     String? status,
     String? paymentStatus,
     String? stripeSessionId,
     String? stripePaymentIntentId,
+    String? gatewayRef,
     String? error,
     StackTrace? stackTrace,
     Map<String, dynamic>? details,
@@ -47,11 +51,15 @@ class PaymentDebugLogger {
 
     final fields = <String>[];
     if (appointmentId != null) fields.add('appointment_id=$appointmentId');
+    if (orderId != null) fields.add('order_id=$orderId');
+    if (paymentId != null) fields.add('payment_id=$paymentId');
+    if (transactionId != null) fields.add('transaction_id=$transactionId');
     if (patientId != null) fields.add('patient_id=$patientId');
     if (status != null) fields.add('status=$status');
     if (paymentStatus != null) fields.add('payment_status=$paymentStatus');
     if (stripeSessionId != null) fields.add('stripe_session_id=$stripeSessionId');
     if (stripePaymentIntentId != null) fields.add('stripe_payment_intent_id=$stripePaymentIntentId');
+    if (gatewayRef != null) fields.add('gateway_ref=$gatewayRef');
 
     buffer.write(fields.join(', '));
 
@@ -137,6 +145,7 @@ class PaymentDebugLogger {
     required String stripeSessionId,
     required String checkoutUrl,
     required String paymentIntentId,
+    String? gatewayRef,
   }) {
     log(
       event: 'STRIPE_RESPONSE',
@@ -144,6 +153,7 @@ class PaymentDebugLogger {
       patientId: patientId,
       stripeSessionId: stripeSessionId,
       stripePaymentIntentId: paymentIntentId,
+      gatewayRef: gatewayRef,
       details: {
         'checkout_url': checkoutUrl,
       },
@@ -155,17 +165,21 @@ class PaymentDebugLogger {
     required String eventType,
     required bool signatureVerified,
     int? appointmentId,
+    int? orderId,
     String? patientId,
     String? stripeSessionId,
     String? stripePaymentIntentId,
+    String? gatewayRef,
     Map<String, dynamic>? metadata,
   }) {
     log(
       event: 'WEBHOOK_EVENT',
       appointmentId: appointmentId,
+      orderId: orderId,
       patientId: patientId,
       stripeSessionId: stripeSessionId,
       stripePaymentIntentId: stripePaymentIntentId,
+      gatewayRef: gatewayRef,
       details: {
         'event_type': eventType,
         'signature_verified': signatureVerified,
@@ -178,6 +192,9 @@ class PaymentDebugLogger {
   static void logRpcResult({
     required String rpcName,
     int? appointmentId,
+    int? orderId,
+    int? paymentId,
+    String? transactionId,
     String? patientId,
     required bool success,
     dynamic result,
@@ -187,6 +204,9 @@ class PaymentDebugLogger {
     log(
       event: 'RPC_RESULT',
       appointmentId: appointmentId,
+      orderId: orderId,
+      paymentId: paymentId,
+      transactionId: transactionId,
       patientId: patientId,
       details: {
         'rpc': rpcName,
@@ -207,6 +227,7 @@ class PaymentDebugLogger {
     required String oldPaymentStatus,
     required String newPaymentStatus,
     String? confirmationCode,
+    String? gatewayRef,
   }) {
     log(
       event: 'APPOINTMENT_UPDATE',
@@ -214,6 +235,7 @@ class PaymentDebugLogger {
       patientId: patientId,
       status: newStatus,
       paymentStatus: newPaymentStatus,
+      gatewayRef: gatewayRef,
       details: {
         'old_status': oldStatus,
         'new_status': newStatus,
@@ -275,6 +297,7 @@ class PaymentDebugLogger {
     String? confirmationCode,
     String? stripeSessionId,
     String? stripePaymentIntentId,
+    String? gatewayRef,
   }) {
     log(
       event: 'FINAL_STATE',
@@ -284,6 +307,7 @@ class PaymentDebugLogger {
       paymentStatus: paymentStatus,
       stripeSessionId: stripeSessionId,
       stripePaymentIntentId: stripePaymentIntentId,
+      gatewayRef: gatewayRef,
       details: {
         'confirmation_code': confirmationCode,
       },
@@ -294,6 +318,9 @@ class PaymentDebugLogger {
   static void logError({
     required String event,
     required int appointmentId,
+    int? orderId,
+    int? paymentId,
+    String? transactionId,
     required String patientId,
     required String error,
     required StackTrace stackTrace,
@@ -301,20 +328,27 @@ class PaymentDebugLogger {
     String? paymentStatus,
     String? stripeSessionId,
     String? stripePaymentIntentId,
+    String? gatewayRef,
     int? statusCode,
     Map<String, dynamic>? details,
   }) {
     log(
       event: 'ERROR: $event',
       appointmentId: appointmentId,
+      orderId: orderId,
+      paymentId: paymentId,
+      transactionId: transactionId,
       patientId: patientId,
       status: status,
       paymentStatus: paymentStatus,
       stripeSessionId: stripeSessionId,
       stripePaymentIntentId: stripePaymentIntentId,
+      gatewayRef: gatewayRef,
       error: error,
       stackTrace: stackTrace,
-      details: details != null ? {...details, if (statusCode != null) 'status_code': statusCode} : (statusCode != null ? {'status_code': statusCode} : null),
+      details: details != null
+          ? {...details, if (statusCode != null) 'status_code': statusCode}
+          : (statusCode != null ? {'status_code': statusCode} : null),
     );
   }
 }
@@ -325,28 +359,39 @@ extension PaymentDebugLogOnFuture<T> on Future<T> {
   Future<T> logPayment({
     required String event,
     int? appointmentId,
+    int? orderId,
+    int? paymentId,
+    String? transactionId,
     String? patientId,
     String? status,
     String? paymentStatus,
     String? stripeSessionId,
     String? stripePaymentIntentId,
+    String? gatewayRef,
   }) async {
     try {
       final result = await this;
       PaymentDebugLogger.log(
         event: '$event.SUCCESS',
         appointmentId: appointmentId,
+        orderId: orderId,
+        paymentId: paymentId,
+        transactionId: transactionId,
         patientId: patientId,
         status: status,
         paymentStatus: paymentStatus,
         stripeSessionId: stripeSessionId,
         stripePaymentIntentId: stripePaymentIntentId,
+        gatewayRef: gatewayRef,
       );
       return result;
     } catch (e, st) {
       PaymentDebugLogger.logError(
         event: event,
         appointmentId: appointmentId ?? 0,
+        orderId: orderId,
+        paymentId: paymentId,
+        transactionId: transactionId,
         patientId: patientId ?? '',
         error: e.toString(),
         stackTrace: st,
@@ -354,6 +399,7 @@ extension PaymentDebugLogOnFuture<T> on Future<T> {
         paymentStatus: paymentStatus,
         stripeSessionId: stripeSessionId,
         stripePaymentIntentId: stripePaymentIntentId,
+        gatewayRef: gatewayRef,
       );
       rethrow;
     }

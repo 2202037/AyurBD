@@ -95,6 +95,8 @@ class SupabaseService {
       throw _fromPostgrest(e);
     } on StorageException catch (e) {
       throw _fromStorage(e);
+    } on FunctionException catch (e) {
+      throw _fromFunction(e);
     } on SocketException catch (e) {
       throw ApiException(
         message: 'No connection to the server.\n${e.message}',
@@ -177,6 +179,10 @@ class SupabaseService {
   static ApiException _fromPostgrest(PostgrestException e) {
     final code = e.code ?? '';
     final raw = (e.message).trim();
+    // Functions that raise a business rule put a machine code in DETAIL, e.g.
+    // `using errcode = 'P0001', detail = 'ALREADY_PAID'`. Carrying it through
+    // lets a screen react to the *rule* without matching on English.
+    final serverCode = _detailCode(e);
 
     switch (code) {
       // Row Level Security refused the row. This is the single most likely
@@ -188,6 +194,7 @@ class SupabaseService {
               ? 'You do not have permission to do that.'
               : 'You do not have permission to do that.\n$raw',
           statusCode: 403,
+          code: serverCode,
         );
 
       // Unique violation. Carries the constraint name so callers can tell a
@@ -197,6 +204,7 @@ class SupabaseService {
           message: _uniqueMessage(e),
           statusCode: 409,
           errors: _uniqueField(e),
+          code: serverCode,
         );
 
       // Foreign key violation — referencing a row that does not exist.
@@ -204,6 +212,7 @@ class SupabaseService {
         return ApiException(
           message: 'That item no longer exists.',
           statusCode: 409,
+          code: serverCode,
         );
 
       // NOT NULL violation.
@@ -211,6 +220,7 @@ class SupabaseService {
         return ApiException(
           message: 'A required field was missing.',
           statusCode: 400,
+          code: serverCode,
         );
 
       // CHECK constraint, and the enum-input failure below it. Both mean the
@@ -220,6 +230,7 @@ class SupabaseService {
         return ApiException(
           message: raw.isEmpty ? 'That value is not allowed.' : raw,
           statusCode: 422,
+          code: serverCode,
         );
 
       // raise exception in a trigger/function without an explicit errcode.
@@ -230,11 +241,21 @@ class SupabaseService {
         return ApiException(
           message: raw.isEmpty ? 'That action was rejected.' : raw,
           statusCode: 422,
+          code: serverCode,
         );
 
       // .single() matched no rows. The old API answered 404 here.
+      //
+      // The message is only passed through when a function raised this
+      // deliberately (which is what a DETAIL code proves). PostgREST's own
+      // text for the same status is "JSON object requested, multiple (or no)
+      // rows returned", which is jargon no patient should be shown.
       case 'PGRST116':
-        return ApiException(message: 'Not found.', statusCode: 404);
+        return ApiException(
+          message: (serverCode != null && raw.isNotEmpty) ? raw : 'Not found.',
+          statusCode: 404,
+          code: serverCode,
+        );
 
       // No/expired JWT.
       case 'PGRST301':
@@ -248,6 +269,54 @@ class SupabaseService {
     return ApiException(
       message: raw.isEmpty ? 'Database error $code.' : raw,
       statusCode: 400,
+      code: serverCode,
+    );
+  }
+
+  /// The machine code a PL/pgSQL function put in DETAIL, if it looks like one.
+  ///
+  /// Functions raise with `detail = 'ALREADY_PAID'` and similar. DETAIL is also
+  /// where Postgres itself writes prose for built-in violations ("Key (id)=(4)
+  /// already exists."), so this only accepts SHOUTING_SNAKE_CASE and ignores
+  /// anything else. That keeps a Postgres sentence from ever being mistaken
+  /// for one of our codes.
+  static String? _detailCode(PostgrestException e) {
+    final detail = (e.details is String ? e.details as String : '').trim();
+    if (detail.isEmpty || detail.length > 64) return null;
+    return RegExp(r'^[A-Z][A-Z0-9_]*$').hasMatch(detail) ? detail : null;
+  }
+
+  /// Translates a Supabase Edge Function failure into [ApiException].
+  ///
+  /// The SDK throws [FunctionException] for any non-2xx response, so an
+  /// `errorResponse(..., status)` call on the function side reaches Dart as a
+  /// `FunctionException` whose [FunctionException.details] carries the same
+  /// `{code, message, ...}` envelope the 2xx path returns. Without this
+  /// translator the exception bypasses the rest of the translation pipeline
+  /// and bubbles up as an unhandled error, which is how a patient paying for
+  /// an already-paid appointment used to see the generic "payment
+  /// temporarily unavailable" message instead of the real reason.
+  static ApiException _fromFunction(FunctionException e) {
+    final status = e.status;
+    final details = e.details;
+
+    String? code;
+    String? message;
+    if (details is Map) {
+      code = details['code']?.toString();
+      message = details['message']?.toString();
+      // Edge Functions are allowed to put the message under `error` (the SDK's
+      // own helper convention) as well as under `message`.
+      message ??= details['error']?.toString();
+    }
+    final safeMessage = (message == null || message.trim().isEmpty)
+        ? 'The payment service did not respond correctly. Please try again.'
+        : message.trim();
+
+    return ApiException(
+      message: safeMessage,
+      statusCode: status,
+      code: code,
     );
   }
 
@@ -306,6 +375,18 @@ class SupabaseService {
     if (d.contains('cart')) return 'That item is already in your cart.';
     if (d.contains('order_number')) {
       return 'Could not allocate an order number. Please try again.';
+    }
+    // The idempotency backstops behind place_order() and the payment
+    // settlement path. Reaching them means two copies of the same request
+    // raced past the advisory lock, so the honest answer is "the first one
+    // won", not "that already exists".
+    if (d.contains('uq_orders_idempotency')) {
+      return 'Your previous order is already being processed.';
+    }
+    if (d.contains('uq_payments_verified_appointment') ||
+        d.contains('uq_payments_stripe_session') ||
+        d.contains('uq_payments_stripe_pi')) {
+      return 'You have already paid for this appointment.';
     }
     if (d.contains('blood_donors_user')) {
       return 'You are already registered as a donor.';

@@ -6,6 +6,8 @@
 /// on `--dart-define`.
 library;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 class AppConfig {
   const AppConfig._();
 
@@ -15,6 +17,119 @@ class AppConfig {
 
   static const String supabaseAnonKey =
       'sb_publishable_jhfgd59kqxmBmSR1XciofQ_TeWGrF5G';
+
+  // -------------------------------------------------------------------------
+  // Backend reachability
+  //
+  // The Supabase backend is the SAME deployed HTTPS host on every platform —
+  // web, Android and iOS. It is deliberately a `const`, not a `--dart-define`,
+  // so a release build cannot be produced against a developer's machine by
+  // forgetting a flag.
+  //
+  // What *is* environment-dependent is the FRONTEND origin: a debug web build
+  // is served from http://localhost:<port>, a release web build from the
+  // production domain, and a phone has no origin at all. Those two ideas used
+  // to be conflated, which is the bug this section exists to prevent — see
+  // [paymentReturnTarget].
+  // -------------------------------------------------------------------------
+
+  /// Hosts that are valid for a *frontend* dev server but never for the
+  /// backend. A phone resolving one of these reaches itself, not the server.
+  static const Set<String> _loopbackHosts = {
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0',
+    '::1',
+    // The Android emulator's alias for the host machine. Correct for the old
+    // XAMPP setup, meaningless for a hosted Supabase project.
+    '10.0.2.2',
+  };
+
+  /// Fails fast if [supabaseUrl] or [supabaseAnonKey] could not work in
+  /// production. Called by `bootstrap()` in main.dart before
+  /// `Supabase.initialize`.
+  ///
+  /// This is a real runtime check rather than an `assert`, because an assert is
+  /// compiled out of exactly the build where the mistake matters. Throwing here
+  /// costs one string comparison at startup and converts a class of silent
+  /// "the app works on my machine" failures into an immediate, named error.
+  static void assertValidBackendConfig() {
+    final uri = Uri.tryParse(supabaseUrl);
+
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      throw StateError(
+        'AppConfig.supabaseUrl is not a valid absolute URL: "$supabaseUrl".',
+      );
+    }
+    if (uri.scheme != 'https') {
+      throw StateError(
+        'AppConfig.supabaseUrl must use https, got "${uri.scheme}". '
+        'Android 9+ and iOS ATS both block cleartext by default, so an http '
+        'backend fails on device even when it works in a browser.',
+      );
+    }
+    if (_loopbackHosts.contains(uri.host.toLowerCase())) {
+      throw StateError(
+        'AppConfig.supabaseUrl points at "${uri.host}", which on a phone means '
+        'the phone itself. The Supabase backend must be the deployed host. '
+        'A localhost origin is only ever valid for the Flutter web dev server '
+        '(see AppConfig.paymentReturnTarget).',
+      );
+    }
+    // The publishable/anon key is meant to ship in a client binary; a secret
+    // key is not, and shipping one would hand every installer full
+    // RLS-bypassing access to the database.
+    if (supabaseAnonKey.startsWith('sb_secret_') ||
+        supabaseAnonKey.contains('service_role')) {
+      throw StateError(
+        'AppConfig.supabaseAnonKey looks like a SECRET key. Flutter must only '
+        'ever carry the publishable/anon key.',
+      );
+    }
+    if (supabaseAnonKey.trim().isEmpty) {
+      throw StateError('AppConfig.supabaseAnonKey is empty.');
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Frontend origin (Stripe return trip)
+  // -------------------------------------------------------------------------
+
+  /// Where Stripe should send the browser back to once checkout finishes.
+  ///
+  /// This is the one place a localhost URL is legitimate, and only on web.
+  /// The distinction the rest of this file is built around:
+  ///
+  ///   * Supabase backend  — always [supabaseUrl], the deployed HTTPS host.
+  ///   * Frontend origin   — whatever is running the UI. On a debug web build
+  ///     that is `http://localhost:<port>`; on a release web build it is the
+  ///     production domain; on Android/iOS there is no origin, so the return
+  ///     trip is the `ayurbd://` custom scheme registered in the manifest.
+  ///
+  /// Computed from `Uri.base` rather than hard-coded, so the web dev server's
+  /// port — which `flutter run` picks at random unless `--web-port` is passed —
+  /// is always right without anyone editing a constant.
+  ///
+  /// The Edge Function validates whatever it receives here against its own
+  /// allowlist before handing it to Stripe; this value is a *request*, not a
+  /// trusted input. See supabase/functions/create-checkout-session/index.ts.
+  static String get paymentReturnTarget {
+    if (!kIsWeb) return 'ayurbd';
+    try {
+      // Origin only — never the current path or hash, which would otherwise
+      // round-trip a stale route into the redirect.
+      //
+      // `Uri.origin` throws a StateError unless the scheme is http/https with a
+      // non-empty host. That is always true of a page Flutter web is serving,
+      // but a throw here would break the pay button rather than the redirect,
+      // so the failure is contained: '' makes the Edge Function fall back to
+      // its configured APP_URL, which is the behaviour that shipped before
+      // this value was sent at all.
+      return Uri.base.origin;
+    } on StateError {
+      return '';
+    }
+  }
 
   /// Log Postgrest/GoTrue traffic to the console.
   ///

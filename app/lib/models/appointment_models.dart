@@ -73,7 +73,12 @@ class Appointment {
   /// `HH:MM:SS`
   final String time;
 
-  /// pending | confirmed | completed | cancelled
+  /// pending_payment | pending | confirmed | completed | cancelled | expired
+  ///
+  /// `pending_payment` is where a booking starts: the slot is held, the money
+  /// is not in yet. It becomes `pending` once payment is verified and
+  /// `confirmed` once the doctor accepts. `expired` is the sweeper releasing a
+  /// hold that was never paid.
   final String status;
 
   final String? specialty;
@@ -156,10 +161,19 @@ class Appointment {
     return DateTime(d.year, d.month, d.day, h, m);
   }
 
+  /// Still ahead of the patient and still live.
+  ///
+  /// `expired` is excluded even though the date may well be in the future: the
+  /// hold has been released and the slot resold, so listing it as upcoming
+  /// would promise an appointment that no longer exists — and would offer a
+  /// Cancel button the server refuses.
   bool get isUpcoming {
     final at = startsAt;
     if (at == null) return false;
-    return at.isAfter(DateTime.now()) && !isCancelled && status != 'completed';
+    return at.isAfter(DateTime.now()) &&
+        !isCancelled &&
+        !isExpired &&
+        status != 'completed';
   }
 
   bool get isCancelled => status == 'cancelled' || status == 'canceled';
@@ -182,22 +196,49 @@ class Appointment {
   /// so there is no need to track whether a review was already submitted here.
   bool get canReview => !isCancelled;
 
-  /// Excludes appointments with a submission already in review — the server
-  /// returns 409 for those, so offering the button would be a dead end.
+  /// True when a pay button should be offered.
+  ///
+  /// This mirrors `appointment_payability()` and is *only* a courtesy: the
+  /// database re-decides on every write path, so a wrong answer here costs a
+  /// tap, not money. It is kept in step with the function's refusals so the tap
+  /// does not lead to a refusal the user cannot act on:
+  ///
+  ///   * `expired` — a held slot the patient did not pay for in time. It was
+  ///     missing from this list, so an expired appointment still showed a live
+  ///     pay button that could only ever return APPOINTMENT_NOT_PAYABLE.
+  ///   * `refunded` — paying again after a refund would be a second charge for
+  ///     a booking that no longer stands.
+  ///
+  /// A submission already in review is excluded too: the server answers
+  /// PAYMENT_PENDING_VERIFICATION there, so the button would be a dead end.
   bool get canPay =>
       !isPaid &&
       !isPaymentUnderReview &&
       !isCancelled &&
+      paymentStatus != 'refunded' &&
       status != 'completed' &&
+      status != 'expired' &&
       fee > 0;
 
-  /// One line covering all four money states, so screens do not each invent
-  /// their own wording.
+  /// The slot is held but unpaid and will be released if it stays that way.
+  ///
+  /// `pending_payment` is the state a booking now opens in. Screens that only
+  /// knew `pending` treated these as ordinary unpaid bookings, which is close
+  /// enough to right that it hid the difference — but the patient is on a clock
+  /// here, and that is worth saying.
+  bool get isAwaitingPayment => status == 'pending_payment';
+
+  /// The hold lapsed before payment arrived; the slot is back on sale.
+  bool get isExpired => status == 'expired';
+
+  /// One line covering every money state, so screens do not each invent their
+  /// own wording.
   String get paymentLabel {
     if (isPaid) return 'Paid';
     if (paymentStatus == 'refunded') return 'Refunded';
     if (isPaymentUnderReview) return 'Awaiting verification';
     if (isPaymentRejected) return 'Payment rejected';
+    if (isExpired) return 'Payment window closed';
     return 'Unpaid';
   }
 
@@ -324,16 +365,30 @@ class StripeCheckoutSession {
   const StripeCheckoutSession({
     required this.checkoutUrl,
     required this.sessionId,
+    this.reused = false,
   });
 
   final String checkoutUrl;
   final String sessionId;
 
+  /// True when the server handed back a checkout attempt that was already
+  /// open instead of creating a second one. Tapping "pay online" twice is
+  /// meant to reach the same Stripe page, so this is the normal case for a
+  /// repeat tap rather than an error worth surfacing.
+  final bool reused;
+
+  /// Tolerant of a missing `session_id`: the reuse path replays the gateway
+  /// reference stored on our own session row, and a row written before that
+  /// column was populated would otherwise crash the sheet on a cast. The URL
+  /// is the part the caller actually needs.
   factory StripeCheckoutSession.fromJson(Map<String, dynamic> json) =>
       StripeCheckoutSession(
-        checkoutUrl: json['checkout_url'] as String,
-        sessionId: json['session_id'] as String,
+        checkoutUrl: (json['checkout_url'] as String?) ?? '',
+        sessionId: (json['session_id'] as String?) ?? '',
+        reused: json['reused'] == true,
       );
+
+  bool get isUsable => checkoutUrl.isNotEmpty;
 }
 
 /// Payment receipt generated after successful payment.

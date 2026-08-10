@@ -11,10 +11,25 @@ class ApiException implements Exception {
     this.statusCode,
     this.errors = const {},
     this.kind = ApiErrorKind.server,
+    this.code,
   });
 
   final String message;
   final int? statusCode;
+
+  /// A stable machine code for the refusal, when the server sent one.
+  ///
+  /// The database raises its business rules with the user-facing sentence as
+  /// the message and a code such as `ALREADY_PAID`, `OUT_OF_STOCK` or
+  /// `DUPLICATE_ORDER` in the error's DETAIL field; Edge Functions send the
+  /// same idea as `code` in their JSON envelope. Both land here.
+  ///
+  /// Screens should branch on this rather than on [message]: the wording is
+  /// written for people and is expected to change, while the code is a
+  /// contract. A payment already recorded, for instance, should quietly
+  /// refresh the row rather than show an error, and that decision needs to
+  /// survive an edit to the sentence.
+  final String? code;
 
   /// Field name -> first message, flattened from the §6 `errors` object.
   final Map<String, String> errors;
@@ -33,8 +48,12 @@ class ApiException implements Exception {
   /// Message for a specific form field, if the server flagged it.
   String? fieldError(String field) => errors[field];
 
+  /// True when the server refused with [wanted].
+  bool hasCode(String wanted) => code == wanted;
+
   @override
-  String toString() => 'ApiException($statusCode): $message';
+  String toString() =>
+      'ApiException($statusCode${code == null ? '' : ', $code'}): $message';
 }
 
 enum ApiErrorKind {
