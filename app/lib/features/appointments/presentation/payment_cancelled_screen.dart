@@ -4,8 +4,11 @@
 /// checkout page, via either a web URL (`APP_URL/#/payment-cancelled`) or a
 /// deep link (`ayurbd://payment-cancelled`). No appointment work happens here —
 /// Stripe did not charge anything, so there is nothing to refresh — it just
-/// explains that the booking is still unpaid and points back at the list.
+/// explains that the booking is still unpaid and sends the patient back to the
+/// appointments list they started from.
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -13,8 +16,40 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/constants/app_theme.dart';
 
-class PaymentCancelledScreen extends StatelessWidget {
-  const PaymentCancelledScreen({super.key});
+class PaymentCancelledScreen extends StatefulWidget {
+  const PaymentCancelledScreen({super.key, this.returnTo});
+
+  /// The internal route to hand the patient back to. Comes from the
+  /// `return_to` query value and is validated against the route allowlist —
+  /// a forged value is replaced by the appointments list.
+  final String? returnTo;
+
+  @override
+  State<PaymentCancelledScreen> createState() => _PaymentCancelledScreenState();
+}
+
+class _PaymentCancelledScreenState extends State<PaymentCancelledScreen> {
+  /// How long the cancellation message stays on screen before returning the
+  /// patient to the appointments list.
+  static const _dismissDelay = Duration(seconds: 2);
+
+  Timer? _returnTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _returnTimer = Timer(_dismissDelay, () {
+      if (mounted) {
+        context.go(resolvePaymentReturn(widget.returnTo));
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _returnTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +83,8 @@ class PaymentCancelledScreen extends StatelessWidget {
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton(
-                    onPressed: () => context.go(Routes.appointments),
+                    onPressed: () =>
+                        context.go(resolvePaymentReturn(widget.returnTo)),
                     child: const Text('My appointments'),
                   ),
                 ),

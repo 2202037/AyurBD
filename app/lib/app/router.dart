@@ -198,6 +198,21 @@ class Routes {
   static String placeDetail(PlaceKind kind, int id) => '${placeList(kind)}/$id';
 }
 
+/// Internal AYUR routes a Stripe success/cancel redirect may ask the app to
+/// return to. `return_to` rides the Stripe redirect URL as a navigation hint
+/// only — it never proves a payment — so any value not on this list is
+/// dropped in favour of [Routes.appointments] rather than followed verbatim.
+const Set<String> paymentReturnAllowlist = {Routes.appointments};
+
+/// Resolves the `return_to` query value handed back by Stripe against
+/// [paymentReturnAllowlist]. Always yields an internal AYUR route; the
+/// default is the "My appointments" list, which is where every payment flow
+/// starts.
+String resolvePaymentReturn(String? raw) =>
+    raw != null && paymentReturnAllowlist.contains(raw)
+        ? raw
+        : Routes.appointments;
+
 /// Screens that only make sense *without* a session. A signed-in user landing on
 /// one is bounced to their own landing screen — there is nothing for them here.
 ///
@@ -576,12 +591,15 @@ final routerProvider = Provider<GoRouter>((ref) {
           appointmentId:
               int.tryParse(s.uri.queryParameters['appointment_id'] ?? ''),
           sessionId: s.uri.queryParameters['session_id'],
+          returnTo: s.uri.queryParameters['return_to'],
         ),
       ),
       GoRoute(
         parentNavigatorKey: _rootKey,
         path: Routes.paymentCancelled,
-        builder: (_, __) => const PaymentCancelledScreen(),
+        builder: (_, s) => PaymentCancelledScreen(
+          returnTo: s.uri.queryParameters['return_to'],
+        ),
       ),
       GoRoute(
         parentNavigatorKey: _rootKey,

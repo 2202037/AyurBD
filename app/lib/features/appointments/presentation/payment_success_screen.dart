@@ -15,6 +15,8 @@
 /// scary error.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -36,7 +38,12 @@ const _verifyAttempts = 8;
 const _verifyGap = Duration(seconds: 1);
 
 class PaymentSuccessScreen extends ConsumerStatefulWidget {
-  const PaymentSuccessScreen({super.key, this.appointmentId, this.sessionId});
+  const PaymentSuccessScreen({
+    super.key,
+    this.appointmentId,
+    this.sessionId,
+    this.returnTo,
+  });
 
   /// Taken from the redirect query string. Null when someone landed here by
   /// hand; the screen then has nothing to verify.
@@ -44,6 +51,12 @@ class PaymentSuccessScreen extends ConsumerStatefulWidget {
 
   /// The Stripe Checkout `cs_...` id, passed back by `{CHECKOUT_SESSION_ID}`.
   final String? sessionId;
+
+  /// The internal route to return the patient to once the webhook result is
+  /// confirmed. Comes from the `return_to` query value and is validated
+  /// against the route allowlist — a forged value is replaced by the
+  /// appointments list.
+  final String? returnTo;
 
   @override
   ConsumerState<PaymentSuccessScreen> createState() =>
@@ -55,6 +68,16 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
   _VerifyStatus _status = _VerifyStatus.checking;
   Appointment? _appointment;
   String? _error;
+
+  /// Where the patient is handed back once payment is confirmed.
+  late final String _returnTo = resolvePaymentReturn(widget.returnTo);
+
+  /// How long the paid confirmation stays on screen before automatically
+  /// returning the patient to the screen they started from, so a successful
+  /// payment does not strand them on this page.
+  static const _confirmDelay = Duration(seconds: 3);
+
+  Timer? _returnTimer;
 
   int get _id => widget.appointmentId ?? 0;
 
@@ -68,6 +91,12 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
       return;
     }
     _verify();
+  }
+
+  @override
+  void dispose() {
+    _returnTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _verify() async {
@@ -112,6 +141,7 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
             confirmationCode: appointment.confirmationCode,
           );
 
+          _scheduleReturn();
           return;
         }
         // Still pending: give the webhook a moment, then re-read.
@@ -163,6 +193,23 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
     }
   }
 
+  /// Shows the confirmed state for a moment ([_confirmDelay]) and then
+  /// returns the patient to the screen they started from — the appointments
+  /// list — so the flow ends where it began instead of on the success page.
+  ///
+  /// Confirmation itself has already happened: [Appointment.isPaid] reflects
+  /// the database, which only the webhook moves. This timer is navigation
+  /// only, and a tap on one of the escape buttons before it fires simply
+  /// disposes the screen and cancels it.
+  void _scheduleReturn() {
+    _returnTimer?.cancel();
+    _returnTimer = Timer(_confirmDelay, () {
+      if (mounted) {
+        context.go(_returnTo);
+      }
+    });
+  }
+
   void _openReceipt() {
     if (_appointment == null) return;
     context.push(Routes.receiptFor(_appointment!.id));
@@ -170,7 +217,7 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
 
   void _goToAppointment() {
     if (_appointment == null) return;
-    context.go(Routes.appointments);
+    context.go(_returnTo);
   }
 
   @override
@@ -201,7 +248,7 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
                     'redirect. Head back to your appointments and try again.',
                 actions: [
                   FilledButton(
-                    onPressed: () => context.go(Routes.appointments),
+                    onPressed: () => context.go(_returnTo),
                     child: const Text('My appointments'),
                   ),
                 ],
@@ -225,7 +272,7 @@ class _PaymentSuccessScreenState extends ConsumerState<PaymentSuccessScreen> {
                     child: const Text('Try again'),
                   ),
                   TextButton(
-                    onPressed: () => context.go(Routes.appointments),
+                    onPressed: () => context.go(_returnTo),
                     child: const Text('My appointments'),
                   ),
                 ],

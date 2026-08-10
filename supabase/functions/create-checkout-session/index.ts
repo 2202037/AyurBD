@@ -54,6 +54,14 @@ const corsHeaders = {
  *  payment_sessions row and the hosted page expire together. */
 const REUSE_WINDOW_MINUTES = 45;
 
+/** The internal AYUR route Stripe's return URL asks the app to reopen after
+ *  checkout. The payment flow always starts from the patient's "My
+ *  appointments" list, so both the success and cancel trips point there. It
+ *  is only a navigation hint — the app validates it against its own route
+ *  allowlist before following it, and the webhook/database decides payment
+ *  success, never this string. */
+const PAYMENT_RETURN_PATH = "/appointments";
+
 /**
  * Build the Stripe `success_url` for a specific client.
  *
@@ -64,12 +72,60 @@ const REUSE_WINDOW_MINUTES = 45;
 function buildSuccessUrl(returnTarget: string, appointmentId: string | number): string {
   return buildRedirectUrl(
     returnTarget,
-    `payment-success?appointment_id=${appointmentId}&session_id={CHECKOUT_SESSION_ID}`
+    `payment-success?appointment_id=${appointmentId}&session_id={CHECKOUT_SESSION_ID}&return_to=${PAYMENT_RETURN_PATH}`
   );
 }
 
 function buildCancelUrl(returnTarget: string): string {
-  return buildRedirectUrl(returnTarget, "payment-cancelled");
+  return buildRedirectUrl(returnTarget, `payment-cancelled?return_to=${PAYMENT_RETURN_PATH}`);
+}
+
+/** Hosts of Flutter's local web dev server. `flutter run -d chrome` chooses
+ *  its port at random on every run, so the allowlist below can never list it
+ *  in advance. A redirect to these — any port — is always safe: it sends the
+ *  browser back to the machine it is already on, taking `session_id` to the
+ *  same place it already sits, and no other host can reach this machine's
+ *  loopback interface. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+/** True when [origin] is an http(s) URL on this machine's loopback interface,
+ *  regardless of port — the case for every `flutter run -d chrome` session. */
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    return LOOPBACK_HOSTS.has(u.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/** The lowercase hostname of this project's Supabase backend, or ''. */
+function supabaseHost(): string {
+  try {
+    return new URL(Deno.env.get("SUPABASE_URL") || "").hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/** True when [origin] is the Supabase project host itself.
+ *
+ *  That host is the API (PostgREST / Edge Functions / Storage). It is never a
+ *  Flutter route: a browser pointed at
+ *  `https://<ref>.supabase.co/appointments/30?payment=success` gets
+ *  `{"error":"requested path is invalid"}`, which is exactly the dead end this
+ *  fix removes. The check is done here so the error is loud (no session is
+ *  minted with a broken success_url) instead of silent (every checkout returns
+ *  the patient to a page that does not exist). */
+function isSupabaseHost(origin: string): boolean {
+  const host = supabaseHost();
+  if (!host) return false;
+  try {
+    return new URL(origin).hostname.toLowerCase() === host;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -87,21 +143,32 @@ function buildCancelUrl(returnTarget: string): string {
  * accepted:
  *
  *   * the mobile custom scheme, `ayurbd`;
+ *   * any loopback origin on any port (Flutter's web dev server; see
+ *     [LOOPBACK_HOSTS]);
  *   * any origin listed in `APP_WEB_ORIGINS` (comma-separated);
  *   * `APP_URL`, kept so an existing single-secret deployment keeps working.
  *
- * Anything else falls back to `APP_URL` rather than failing the payment, which
- * is the same behaviour as before this parameter existed.
+ * Anything else falls back to `APP_URL` rather than failing the payment. The
+ * caller then checks the result against [isSupabaseHost], so a misconfigured
+ * `APP_URL` pointing at the Supabase project never becomes a redirect target.
  */
 function resolveReturnTarget(requested: unknown, appUrl: string): string {
   const fallback = appUrl.trim();
   if (typeof requested !== "string") return fallback;
 
-  const want = requested.trim().replace(/\/+$/, "");
+  const raw = requested.trim();
+  const want = raw.replace(/\/+$/, "");
   if (!want) return fallback;
 
-  // Mobile: a bare custom scheme, no host to validate.
-  if (want === "ayurbd" || want === "ayurbd://") return "ayurbd";
+  // Mobile: a bare custom scheme, no host to validate. The trailing-slash
+  // strip above turns `ayurbd://` into `ayurbd:`, so that spelling is tested
+  // on the raw string.
+  if (want === "ayurbd" || raw === "ayurbd://") return "ayurbd";
+
+  // Web dev: `flutter run -d chrome` serves the UI from a random localhost
+  // port, which the static allowlist cannot predict. Loopback carries no risk
+  // (see [LOOPBACK_HOSTS]), so it is always accepted.
+  if (isLoopbackOrigin(want)) return want;
 
   const allowed = new Set<string>();
   for (const raw of (Deno.env.get("APP_WEB_ORIGINS") || "").split(",")) {
@@ -120,7 +187,12 @@ function resolveReturnTarget(requested: unknown, appUrl: string): string {
 function buildRedirectUrl(appUrl: string, path: string): string {
   const base = appUrl.trim();
   if (base.startsWith("http://") || base.startsWith("https://")) {
-    return `${base.replace(/\/+$/, "")}/#${path}`;
+    // Flutter Web (GoRouter, hash strategy) reads its route out of the hash
+    // and needs a top-level path after the `#`: `/#/payment-success`. The
+    // bare `#payment-success` form would hand the matcher a fragment without
+    // a leading `/`, which fails GoRouter's `uri.path.startsWith(...)`
+    // assertion on the very first match.
+    return `${base.replace(/\/+$/, "")}/#/${path}`;
   }
   const scheme = base.split("://")[0];
   if (/^[a-z][a-z0-9+.-]*$/i.test(scheme)) {
@@ -308,6 +380,27 @@ serve(async (req) => {
     // Which frontend to return this caller to. Validated against the
     // allowlist, so a forged value cannot redirect the session id off-site.
     const returnTarget = resolveReturnTarget(return_target, appUrl);
+
+    // The Supabase project URL is the backend host — PostgREST, GoTrue,
+    // Storage and these Edge Functions. It has no Flutter routes, so a
+    // success_url pointing there just renders
+    // `{"error":"requested path is invalid"}` in the patient's browser. If
+    // the resolved target (or the APP_URL fallback behind it) is that host,
+    // this deployment is misconfigured: refuse to mint a session with a
+    // broken redirect rather than charge the patient and then strand them.
+    if (isSupabaseHost(returnTarget)) {
+      logError("APP_URL_INVALID", {
+        requestId,
+        appointmentId,
+        patientId: user.id,
+        returnTarget,
+      }, new Error("APP_URL / return_target must not be the Supabase project URL"));
+      return errorResponse(
+        "APP_URL_INVALID",
+        "Online payment is temporarily unavailable.",
+        500,
+      );
+    }
 
     // -----------------------------------------------------------------
     // 1. Ask the database whether this payment may start, and claim the

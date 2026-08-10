@@ -342,6 +342,7 @@ class PaymentService {
         return PaymentFailure.forbidden;
       case 'STRIPE_NOT_CONFIGURED':
       case 'APP_URL_NOT_CONFIGURED':
+      case 'APP_URL_INVALID':
       case 'MISSING_CHECKOUT_URL':
       case 'MALFORMED_CHECKOUT_RESPONSE':
       case 'UNEXPECTED_SERVER_ERROR':
